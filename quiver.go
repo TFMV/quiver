@@ -283,15 +283,6 @@ func (vi *VectorIndex) Close() error {
 	return nil
 }
 
-// uint64SliceToString converts a slice of uint64 IDs to a comma-separated string.
-func uint64SliceToString(slice []uint64) string {
-	strs := make([]string, len(slice))
-	for i, id := range slice {
-		strs[i] = fmt.Sprintf("%d", id)
-	}
-	return strings.Join(strs, ",")
-}
-
 // Flush explicitly flushes the DuckDB appender.
 func (vi *VectorIndex) Flush() error {
 	vi.dbMu.Lock()
