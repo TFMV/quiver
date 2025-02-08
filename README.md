@@ -122,16 +122,6 @@ All benchmarks were run on an Apple M2 Pro.
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-## 🔗 Get Started
-
-Clone the repo and start experimenting with Quiver today:
-
-```bash
-git clone https://github.com/TFMV/quiver.git
-cd quiver
-go run example.go
-```
-
 ## Author
 
 Quiver is developed by [TFMV](https://github.com/TFMV).
