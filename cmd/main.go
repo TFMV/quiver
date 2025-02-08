@@ -2,64 +2,94 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"os"
+	"strconv"
+	"strings"
 
-	"github.com/TFMV/quiver"
-	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/docopt/docopt-go"
+	"go.uber.org/zap"
+
+	quiver "github.com/TFMV/quiver"
+	"github.com/TFMV/quiver/loader"
 )
 
+// main is the CLI entry point. It parses command-line options using docopt,
+// initializes the VectorIndex, loads all supported files from the specified directory,
+// and then saves the updated index.
 func main() {
-	// Initialize Arrow memory allocator
-	pool := memory.NewCheckedAllocator(memory.DefaultAllocator)
+	usage := `Usage:
+  loader --dir=<directory> --db=<dbPath> --index=<indexPath> --dim=<dimension> [--metric=<metric>]
 
-	// Define Arrow schema with a vector field
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "vector", Type: arrow.FixedSizeListOf(3, arrow.PrimitiveTypes.Float32)},
-	}, nil)
-
-	// Create Arrow builders
-	recordBuilder := array.NewRecordBuilder(pool, schema)
-	defer recordBuilder.Release()
-
-	// Insert some vectors
-	vectors := [][]float32{
-		{0.1, 0.2, 0.3},
-		{0.9, 0.8, 0.7},
-		{0.4, 0.5, 0.6},
-	}
-
-	for i, vec := range vectors {
-		idBuilder := recordBuilder.Field(0).(*array.Int64Builder)
-		vecBuilder := recordBuilder.Field(1).(*array.FixedSizeListBuilder)
-		subBuilder := vecBuilder.ValueBuilder().(*array.Float32Builder)
-
-		idBuilder.Append(int64(i))
-		vecBuilder.Append(true)
-		for _, v := range vec {
-			subBuilder.Append(v)
-		}
-	}
-
-	record := recordBuilder.NewRecord()
-	defer record.Release()
-
-	// Initialize vector index
-	index, err := quiver.NewVectorIndex(3, "test.db", "test_index.hnsw")
+Options:
+  --dir=<directory>       Directory containing files to load.
+  --db=<dbPath>           DuckDB database file path.
+  --index=<indexPath>     HNSW index file path.
+  --dim=<dimension>       Vector dimension.
+  --metric=<metric>       Distance metric (cosine|euclidean) [default: cosine].
+`
+	arguments, err := docopt.ParseDoc(usage)
 	if err != nil {
-		log.Fatalf("Failed to create vector index: %v", err)
+		fmt.Fprintf(os.Stderr, "Error parsing arguments: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Add vectors to index
-	for i, vec := range vectors {
-		index.AddVector(i, vec)
+	dir, _ := arguments.String("--dir")
+	dbPath, _ := arguments.String("--db")
+	indexPath, _ := arguments.String("--index")
+	dimStr, _ := arguments.String("--dim")
+	metricStr, _ := arguments.String("--metric")
+
+	dim, err := strconv.Atoi(dimStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid dimension value: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Search for nearest neighbors
-	query := []float32{0.5, 0.5, 0.5}
-	neighbors := index.Search(query, 2)
+	var metric quiver.SpaceType
+	if strings.ToLower(metricStr) == "euclidean" {
+		metric = quiver.Euclidean
+	} else {
+		metric = quiver.Cosine
+	}
 
-	fmt.Println("Nearest neighbors:", neighbors)
+	// Create a production zap logger.
+	logger, err := zap.NewProduction()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create logger: %v\n", err)
+		os.Exit(1)
+	}
+	defer logger.Sync()
+
+	logger.Info("Starting loader",
+		zap.String("directory", dir),
+		zap.String("dbPath", dbPath),
+		zap.String("indexPath", indexPath),
+		zap.Int("dimension", dim),
+		zap.String("metric", metricStr))
+
+	// Initialize the VectorIndex from the quiver package.
+	vi, err := quiver.NewVectorIndex(dim, dbPath, indexPath, metric)
+	if err != nil {
+		logger.Error("Failed to initialize VectorIndex", zap.Error(err))
+		os.Exit(1)
+	}
+	defer func() {
+		if err := vi.Close(); err != nil {
+			logger.Error("Error closing VectorIndex", zap.Error(err))
+		}
+	}()
+
+	// Load files from the specified directory.
+	if err := loader.LoadFilesFromDirectory(dir, vi, logger); err != nil {
+		logger.Error("Failed to load files", zap.Error(err))
+		os.Exit(1)
+	}
+
+	// Save the updated index.
+	if err := vi.Save(); err != nil {
+		logger.Error("Failed to save VectorIndex", zap.Error(err))
+		os.Exit(1)
+	}
+
+	logger.Info("Successfully loaded files and saved VectorIndex")
 }

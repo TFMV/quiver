@@ -8,8 +8,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func cleanupTest(t testing.TB, paths ...string) {
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			t.Logf("Failed to cleanup %s: %v", path, err)
+		}
+	}
+}
+
 func TestVectorIndex_AddAndSearch(t *testing.T) {
-	index, err := quiver.NewVectorIndex(3, "test_index.hnsw", "test_index.duckdb")
+	defer cleanupTest(t, "test_index.hnsw", "test_index.duckdb")
+	index, err := quiver.NewVectorIndex(3, "test_index.hnsw", "test_index.duckdb", quiver.Cosine)
 	if err != nil {
 		t.Fatalf("Failed to create vector index: %v", err)
 	}
@@ -25,25 +34,16 @@ func TestVectorIndex_AddAndSearch(t *testing.T) {
 	}
 
 	query := []float32{0.5, 0.5, 0.5}
-	neighbors := index.Search(query, 2)
+	neighbors, _ := index.Search(query, 2)
 
 	assert.NotEmpty(t, neighbors, "Neighbors should not be empty")
 	assert.Contains(t, neighbors, 2, "Expected vector 2 to be a neighbor")
 }
 
 func TestVectorIndex_SaveLoad(t *testing.T) {
-	// Clean up any existing files first
-	indexPath := "test_index.hnsw"
-	dbPath := "test.db"
-	os.Remove(indexPath)
-	os.Remove(dbPath)
-	defer func() {
-		os.Remove(indexPath)
-		os.Remove(dbPath)
-	}()
-
+	defer cleanupTest(t, "test_index.hnsw", "test.db")
 	// Create and populate index
-	index, err := quiver.NewVectorIndex(3, dbPath, indexPath)
+	index, err := quiver.NewVectorIndex(3, "test.db", "test_index.hnsw", quiver.Cosine)
 	if err != nil {
 		t.Fatalf("Failed to create vector index: %v", err)
 	}
@@ -53,21 +53,22 @@ func TestVectorIndex_SaveLoad(t *testing.T) {
 	index.Save()
 
 	// Load index
-	loadedIndex, err := quiver.LoadVectorIndex(3, indexPath)
+	loadedIndex, err := quiver.NewVectorIndex(3, "test.db", "test_index.hnsw", quiver.Cosine)
 	if err != nil {
 		t.Fatalf("Failed to load vector index: %v", err)
 	}
 
-	neighbors := loadedIndex.Search([]float32{0.1, 0.2, 0.3}, 1)
+	neighbors, _ := loadedIndex.Search([]float32{0.1, 0.2, 0.3}, 1)
 	assert.Equal(t, []int{1}, neighbors, "Loaded index should return correct neighbor")
 }
 
 func TestVectorIndex_DistanceMetrics(t *testing.T) {
-	indexCosine, err := quiver.NewVectorIndexWithMetric(3, "test.db", "test_index.hnsw", quiver.Cosine)
+	defer cleanupTest(t, "test.db", "test_index.hnsw")
+	indexCosine, err := quiver.NewVectorIndex(3, "test.db", "test_index.hnsw", quiver.Cosine)
 	if err != nil {
 		t.Fatalf("Failed to create vector index: %v", err)
 	}
-	indexEuclidean, err := quiver.NewVectorIndexWithMetric(3, "test.db", "test_index.hnsw", quiver.Euclidean)
+	indexEuclidean, err := quiver.NewVectorIndex(3, "test.db", "test_index.hnsw", quiver.Euclidean)
 	if err != nil {
 		t.Fatalf("Failed to create vector index: %v", err)
 	}
@@ -84,18 +85,19 @@ func TestVectorIndex_DistanceMetrics(t *testing.T) {
 	}
 
 	query := []float32{0.5, 0.5, 0.5}
-	cosineNeighbors := indexCosine.Search(query, 2)
-	euclideanNeighbors := indexEuclidean.Search(query, 2)
+	cosineNeighbors, _ := indexCosine.Search(query, 2)
+	euclideanNeighbors, _ := indexEuclidean.Search(query, 2)
 
 	assert.NotEqual(t, cosineNeighbors, euclideanNeighbors, "Different metrics should yield different neighbors")
 }
 
 func BenchmarkVectorSearch(b *testing.B) {
-	index, err := quiver.NewVectorIndex(128, "test_index.hnsw", "test_index.duckdb")
+	defer cleanupTest(b, "test_index.hnsw", "test_index.duckdb")
+	index, err := quiver.NewVectorIndex(128, "test_index.hnsw", "test_index.duckdb", quiver.Cosine)
 	if err != nil {
 		b.Fatalf("Failed to create vector index: %v", err)
 	}
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		vec := make([]float32, 128)
 		for j := range vec {
 			vec[j] = float32(i % 10)
@@ -109,7 +111,7 @@ func BenchmarkVectorSearch(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		index.Search(query, 10)
 	}
 }

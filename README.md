@@ -2,6 +2,8 @@
 
 Vectorized Search for Structured Data
 
+It is thread safe and uses a lock to ensure that only one thread can access the index at a time.
+
 ## Overview
 
 Quiver is a lightweight vector database optimized for structured datasets. It integrates Apache Arrow Tables with Approximate Nearest Neighbors (ANN) search, leveraging Hierarchical Navigable Small World (HNSW) graphs for efficient high-dimensional vector retrieval.
@@ -46,20 +48,36 @@ loadedIndex := quiver.Load("index.hnsw")
 
 ## Benchmark Results
 
-Below are the benchmark results for **Quiver** running on **Apple M2 Pro**:
+Below are the benchmark results for Quiver running on Apple M2 Pro:
 
 | Benchmark                     | Iterations  | Time per Op (ns) | Memory per Op (B) | Allocations per Op |
 |--------------------------------|-------------|------------------|--------------------|---------------------|
-| **Vector Index - Add**         | 10,000      | 1,963,062 ns     | 4,476 B            | 23                  |
-| **Vector Index - Search**      | 496,915     | 25,667 ns        | 856 B              | 14                  |
-| **Vector Search**              | 1,576,177   | 7,590 ns         | 856 B              | 14                  |
+| Vector Index - Add            | 2,115       | 739,556 ns       | 4,430 B           | 22                |
+| Vector Index - Search          | 645         | 945,968 ns       | 12,328 B          | 297               |
+| Vector Search                 | 663         | 976,710 ns       | 12,378 B          | 306               |
 
 ## Observations
 
-- **Vector Insertion:** Each vector addition takes **~2ms** with **23 allocations**. Optimizations might include **batch inserts** or **parallelization**.
-- **Vector Search:** Achieves **~7.6µs per search**, which is **highly efficient** for ANN lookups. Memory allocation is low (856 B/op).
-- **Overall Performance:** With nearly **1.5M+ queries per second**, **Quiver** performs well in high-throughput vector search scenarios.
-- **Future Optimizations:** Exploring **lower memory overhead** and **faster inserts** using more efficient memory allocation strategies.
+Vector Insertion:
+
+- Each vector addition takes ~740µs, with 22 allocations per op.
+- Optimization Potential: Further batch inserts or parallelized writes could improve throughput.
+
+Vector Search:
+
+- Search operations take ~945µs per lookup, with 297+ allocations per op.
+- The relatively high memory usage suggests optimization opportunities in query execution, possibly via pre-fetching or caching.
+
+Overall Performance:
+
+- With search speeds averaging ~1ms per query, Quiver is highly efficient for Approximate Nearest Neighbor (ANN) search.
+- Memory footprint and allocation count indicate areas where further tuning could yield faster search times.
+
+Future Optimizations:
+
+- Reducing memory overhead via improved buffer reuse.
+- Index build time optimizations, possibly by precomputing hierarchical navigable structures.
+- Fine-tuning concurrency settings to balance index updates vs. search latency.
 
 ---
 
@@ -76,4 +94,4 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Authors
 
-- [@TFMV](https://github.com/TFMV)
+[TFMV](https://github.com/TFMV)
