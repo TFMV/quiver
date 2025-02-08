@@ -49,8 +49,8 @@ func NewArrowAppender(schema *arrow.Schema, logger *zap.Logger) (*ArrowAppender,
 	}, nil
 }
 
-// AppendRow appends a single row (as a slice of interface{}) to the internal builders.
-func (a *ArrowAppender) AppendRow(values []interface{}) error {
+// AppendRow appends a single row (as a slice of any) to the internal builders.
+func (a *ArrowAppender) AppendRow(values []any) error {
 	if len(values) != len(a.builders) {
 		return fmt.Errorf("value count (%d) does not match schema field count (%d)", len(values), len(a.builders))
 	}
@@ -186,7 +186,7 @@ func createBuilders(schema *arrow.Schema, mem memory.Allocator) ([]array.Builder
 }
 
 // appendToBuilder appends a value to a specific builder.
-func appendToBuilder(b array.Builder, val interface{}, index int) error {
+func appendToBuilder(b array.Builder, val any, index int) error {
 	switch b := b.(type) {
 	case *array.Int64Builder:
 		v, ok := val.(int64)
