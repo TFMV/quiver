@@ -83,26 +83,6 @@ Below are the benchmark results for Quiver running on Apple M2 Pro:
 
 These improvements make Quiver one of the fastest and most efficient vector search solutions available, perfect for environments where every millisecond counts! 🏃‍♂️💨
 
-## Observations
-
-Vector Index - Add
-
-- Improved by ~7.1% (from 666,633 ns → 713,879 ns)
-- Memory usage is stable (3,034 B → 3,040 B)
-- No additional allocations per operation (21)
-
-🔍 Vector Index - Search
-
-- Nearly 3x faster (from 966,301 ns → 337,218 ns)
-- ~74.4% reduction in memory usage (from 12,329 B → 3,153 B)
-- Drastically reduced allocations (296 → 90)
-
-🔎 Vector Search
-
-- 2.5x improvement in speed (from 901,365 ns → 354,247 ns)
-- ~73.8% reduction in memory usage (from 12,377 B → 3,243 B)
-- Significantly fewer allocations (306 → 104)
-
 ---
 
 ## License
