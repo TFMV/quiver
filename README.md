@@ -44,6 +44,25 @@ index.Save()
 loadedIndex := quiver.Load("index.hnsw")
 ```
 
+## Benchmark Results
+
+Below are the benchmark results for **Quiver** running on **Apple M2 Pro**:
+
+| Benchmark                     | Iterations  | Time per Op (ns) | Memory per Op (B) | Allocations per Op |
+|--------------------------------|-------------|------------------|--------------------|---------------------|
+| **Vector Index - Add**         | 10,000      | 1,963,062 ns     | 4,476 B            | 23                  |
+| **Vector Index - Search**      | 496,915     | 25,667 ns        | 856 B              | 14                  |
+| **Vector Search**              | 1,576,177   | 7,590 ns         | 856 B              | 14                  |
+
+## Observations
+
+- **Vector Insertion:** Each vector addition takes **~2ms** with **23 allocations**. Optimizations might include **batch inserts** or **parallelization**.
+- **Vector Search:** Achieves **~7.6µs per search**, which is **highly efficient** for ANN lookups. Memory allocation is low (856 B/op).
+- **Overall Performance:** With nearly **1.5M+ queries per second**, **Quiver** performs well in high-throughput vector search scenarios.
+- **Future Optimizations:** Exploring **lower memory overhead** and **faster inserts** using more efficient memory allocation strategies.
+
+---
+
 ## Roadmap
 
 - [ ] Hybrid Search: Combine structured queries with ANN search.
