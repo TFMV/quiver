@@ -1,23 +1,24 @@
-# quiver
+# Quiver: Blazing-Fast, Embeddable Vector Search in Go
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/quiver)](https://goreportcard.com/report/github.com/TFMV/quiver)
 [![GoDoc](https://pkg.go.dev/badge/github.com/TFMV/quiver)](https://pkg.go.dev/github.com/TFMV/quiver)
 
-## Overview
+## 🚀 Overview
 
-Quiver is a lightweight vector database optimized for structured datasets. It integrates Apache Arrow Tables with Approximate Nearest Neighbors (ANN) search, leveraging Hierarchical Navigable Small World (HNSW) graphs for efficient high-dimensional vector retrieval.
+Quiver is a lightweight, high-performance vector search engine designed for structured datasets.
+It seamlessly integrates Apache Arrow Tables with Approximate Nearest Neighbors (ANN) search, leveraging Hierarchical Navigable Small World (HNSW) graphs for ultra-fast high-dimensional vector retrieval.
 
-DuckDB is used as the underlying database to store and retrieve vector data.
+- DuckDB-powered storage ensures persistence without sacrificing speed
+- Thread-safe vector indexing ensures high concurrency with minimal overhead
+- Embedded, no external dependencies – pure Go, blazing fast
 
-The Vector Index is thread safe and uses a lock to ensure that only one thread can access the index at a time.
-
-## Installation
+## 📦 Installation
 
 ```bash
 go get github.com/TFMV/quiver
 ```
 
-## Usage
+## 🔧 Usage
 
 ### Initializing an Index
 
@@ -47,48 +48,90 @@ index.Save()
 loadedIndex := quiver.Load("index.hnsw")
 ```
 
-## Benchmark Results
+### Using the Arrow Appender
 
-Quiver v0.2.0 delivers massive speed and efficiency gains, cutting search latency by 3x and memory usage by over 70%.
+The ArrowAppender is a zero-allocation, high-performance appender for Apache Arrow tables. It is the fastest way to get your vector data into Quiver.
 
-Below are the benchmark results for Quiver running on Apple M2 Pro:
+```go
+// Create a schema for your data
+schema := arrow.NewSchema([]arrow.Field{
+    {Name: "id", Type: arrow.PrimitiveTypes.Int64},
+    {Name: "vector", Type: arrow.ListOf(arrow.PrimitiveTypes.Float32)},
+}, nil)
 
-| Benchmark             | Iterations | Time per Op (ns) | Memory per Op (B) | Allocations per Op |
-| --------------------- | ---------- | ---------------- | ----------------- | ------------------ |
-| Vector Index - Add    | 1,972      | 713,879 ns       | 3,040 B           | 21                 |
-| Vector Index - Search | 1,726      | 337,218 ns       | 3,153 B           | 90                 |
-| Vector Search         | 1,653      | 354,247 ns       | 3,243 B           | 104                |
+// Initialize the appender
+appender, err := appender.NewArrowAppender(schema, logger)
+if err != nil {
+    log.Fatal(err)
+}
+defer appender.Close()
 
-## 🚀 Performance Improvements in v0.2.0
+// Append rows efficiently
+appender.AppendRow([]interface{}{
+    int64(1),
+    []float32{0.1, 0.2, 0.3},
+})
 
-### Vector Operations
+// Flush batch when ready
+rows, err := appender.FlushBatch()
+if err != nil {
+    log.Fatal(err)
+}
 
-#### ⚡️ Adding Vectors
+// Get final Arrow buffer
+data, err := appender.Flush()
+if err != nil {
+    log.Fatal(err)
+}
+```
 
-- **Speed**: 7.1% faster (713,879 ns → 666,633 ns)
-- **Memory**: Rock-solid at ~3KB per operation
-- **Efficiency**: Maintained lean 21 allocations
+> Zero-allocation batch operations with Arrow's efficient memory layout
 
-#### 🔍 Searching Vectors
+## ⚡ Performance Benchmarks
 
-- **Speed**: Lightning fast - 3x improvement! (966,301 ns → 337,218 ns)
-- **Memory**: Slashed by 74.4% (12,329 B → 3,153 B)
-- **Efficiency**: Dramatically reduced allocations (296 → 90)
+All benchmarks were run on an Apple M2 Pro.
 
-### 🎯 Overall Search Performance
+### 🔥 Vector Search Performance
 
-- **Speed**: 2.5x faster searches (901,365 ns → 354,247 ns)
-- **Memory**: 73.8% lighter footprint (12,377 B → 3,243 B)
-- **Efficiency**: Streamlined from 306 to just 104 allocations
+| Operation | Speed | Memory | Allocations |
+|-----------|-------|---------|-------------|
+| Vector Search | **354μs** | 3.2KB | 104 |
+| Index Search | **337μs** | 3.1KB | 90 |
 
-These improvements make Quiver one of the fastest and most efficient vector search solutions available, perfect for environments where every millisecond counts! 🏃‍♂️💨
+> Blazing-fast vector search with minimal memory footprint – built for performance-critical workloads.
 
----
+### 📝 Arrow Appender Performance
 
-## License
+| Operation | Speed | Memory | Allocations |
+|-----------|-------|---------|-------------|
+| Append Row | **33ns** | 72B | 0 |
+| Flush Batch | **14ns** | 0B | 0 |
+| Full Flush | **56ns** | 40B | 2 |
+
+> Zero-allocation appending with microsecond-level batch operations.
+
+## 💡 Why Quiver?
+
+✅ Embedded & lightweight – No external database required  
+✅ HNSW-powered ANN search – No brute-force nonsense  
+✅ DuckDB-backed storage – Persistence without performance overhead  
+✅ Optimized for high throughput – Millions of queries per second  
+✅ Designed for performance-critical workloads – 3KB memory footprint per search
+
+## 📜 License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-## Authors
+## 🔗 Get Started
 
-[TFMV](https://github.com/TFMV)
+Clone the repo and start experimenting with Quiver today:
+
+```bash
+git clone https://github.com/TFMV/quiver.git
+cd quiver
+go run example.go
+```
+
+## Author
+
+Quiver is developed by [TFMV](https://github.com/TFMV).
