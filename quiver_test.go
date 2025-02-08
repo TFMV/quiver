@@ -80,14 +80,26 @@ func TestVectorIndex_DistanceMetrics(t *testing.T) {
 	}
 
 	for i, vec := range vectors {
-		indexCosine.AddVector(i, vec)
-		indexEuclidean.AddVector(i, vec)
+		if err := indexCosine.AddVector(i, vec); err != nil {
+			t.Fatalf("Failed to add vector to cosine index: %v", err)
+		}
+		if err := indexEuclidean.AddVector(i, vec); err != nil {
+			t.Fatalf("Failed to add vector to euclidean index: %v", err)
+		}
 	}
 
 	query := []float32{0.5, 0.5, 0.5}
-	cosineNeighbors, _ := indexCosine.Search(query, 2)
-	euclideanNeighbors, _ := indexEuclidean.Search(query, 2)
+	cosineNeighbors, err := indexCosine.Search(query, 2)
+	if err != nil {
+		t.Fatalf("Failed to search cosine index: %v", err)
+	}
+	euclideanNeighbors, err := indexEuclidean.Search(query, 2)
+	if err != nil {
+		t.Fatalf("Failed to search euclidean index: %v", err)
+	}
 
+	assert.NotEmpty(t, cosineNeighbors, "Cosine neighbors should not be empty")
+	assert.NotEmpty(t, euclideanNeighbors, "Euclidean neighbors should not be empty")
 	assert.NotEqual(t, cosineNeighbors, euclideanNeighbors, "Different metrics should yield different neighbors")
 }
 

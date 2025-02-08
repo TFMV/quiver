@@ -88,9 +88,8 @@ func NewVectorIndex(dim int, dbPath, indexPath string, metric SpaceType) (*Vecto
 	if err != nil {
 		return nil, fmt.Errorf("failed to create logger: %w", err)
 	}
-	// NOTE: Do not defer logger.Sync() here. Instead, call Close() on VectorIndex when done.
 
-	const maxElements = 200000 // Increased capacity for large datasets
+	const maxElements = 200000
 
 	logger.Info("Initializing HNSW Index", zap.Int("maxElements", maxElements))
 
@@ -103,11 +102,11 @@ func NewVectorIndex(dim int, dbPath, indexPath string, metric SpaceType) (*Vecto
 		spaceType = 3 // CosineSpace in hnswgo.
 	}
 
-	// Create a new HNSW index with increased capacity.
+	// Initialize the HNSW index
 	index := hnsw.New(dim, 32, maxElements, 100, spaceType, hnsw.SpaceType(spaceType), true)
 	index.ResizeIndex(maxElements)
 
-	// Attempt to load an existing index from disk.
+	// Attempt to load an existing index from disk
 	if _, err := os.Stat(indexPath); err == nil {
 		logger.Info("Loading existing index from disk", zap.String("path", indexPath))
 		if idx, err := hnsw.Load(indexPath, hnsw.SpaceType(spaceType), dim, 10000, true); err == nil {
@@ -117,13 +116,12 @@ func NewVectorIndex(dim int, dbPath, indexPath string, metric SpaceType) (*Vecto
 		}
 	}
 
-	// Initialize DuckDB and its appender.
 	db, appender, err := initDB(dbPath)
 	if err != nil {
 		return nil, err
 	}
 
-	vi := &VectorIndex{
+	return &VectorIndex{
 		index:     index,
 		db:        db,
 		appender:  appender,
@@ -135,8 +133,7 @@ func NewVectorIndex(dim int, dbPath, indexPath string, metric SpaceType) (*Vecto
 				return new(bytes.Buffer)
 			},
 		},
-	}
-	return vi, nil
+	}, nil
 }
 
 // AddVector inserts a vector into both the DuckDB storage and the HNSW index.
@@ -182,9 +179,11 @@ func (vi *VectorIndex) AddVector(id int, vector []float32) error {
 
 // Search performs a k-nearest neighbors search on the HNSW index using the provided query vector.
 // It then retrieves and returns the corresponding IDs from DuckDB.
-func (vi *VectorIndex) Search(query []float32, k int) ([]int, error) {
+// Search performs a k-nearest neighbors search on the HNSW index using the provided query vector.
+// It then retrieves and returns the corresponding IDs from DuckDB.
+func (vi *VectorIndex) Search(queryVector []float32, k int) ([]int, error) {
 	vi.indexMu.RLock()
-	hnswResults, err := vi.index.SearchKNN([][]float32{query}, k, 2)
+	hnswResults, err := vi.index.SearchKNN([][]float32{queryVector}, k, 2)
 	vi.indexMu.RUnlock()
 	if err != nil {
 		vi.logger.Error("Search error in HNSW", zap.Error(err))
@@ -198,26 +197,33 @@ func (vi *VectorIndex) Search(query []float32, k int) ([]int, error) {
 
 	// Collect IDs from HNSW search results.
 	ids := make([]uint64, len(hnswResults[0]))
-	idMap := make(map[uint64]int)
 	for i, r := range hnswResults[0] {
 		ids[i] = r.Label
 	}
 
-	// Retrieve IDs from DuckDB.
-	stmt, err := vi.db.Prepare("SELECT id FROM vectors WHERE id = ?")
-	if err != nil {
-		return nil, fmt.Errorf("DuckDB query prep error: %w", err)
+	// 🔥 Use prepared statement for batch ID lookup
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
 	}
-	defer stmt.Close()
 
-	for _, id := range ids {
-		var mappedID int
-		err := stmt.QueryRow(id).Scan(&mappedID)
-		if err != nil && err != sql.ErrNoRows {
-			vi.logger.Warn("Failed to retrieve ID", zap.Uint64("HNSW_ID", id), zap.Error(err))
-		} else if err == nil {
-			idMap[id] = mappedID
+	placeholders := placeHolders(len(ids))
+	sqlQuery := fmt.Sprintf("SELECT id FROM vectors WHERE id IN (%s)", placeholders)
+	rows, err := vi.db.Query(sqlQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("DuckDB batch query error: %w", err)
+	}
+	defer rows.Close()
+
+	// Efficiently map IDs
+	idMap := make(map[uint64]int)
+	for rows.Next() {
+		var duckDBID int
+		if err := rows.Scan(&duckDBID); err != nil {
+			vi.logger.Warn("Failed to scan DuckDB ID", zap.Error(err))
+			continue
 		}
+		idMap[uint64(duckDBID)] = duckDBID
 	}
 
 	// Use DuckDB IDs when available; otherwise fallback to the HNSW result.
@@ -254,7 +260,6 @@ func (vi *VectorIndex) Save() error {
 // Close releases resources held by the VectorIndex.
 // It closes the DuckDB connection and flushes the logger.
 func (vi *VectorIndex) Close() error {
-	// Acquire both locks to ensure no operation is in progress.
 	vi.indexMu.Lock()
 	vi.dbMu.Lock()
 	defer vi.indexMu.Unlock()
@@ -292,4 +297,8 @@ func (vi *VectorIndex) Flush() error {
 	vi.dbMu.Lock()
 	defer vi.dbMu.Unlock()
 	return vi.appender.Flush()
+}
+
+func placeHolders(n int) string {
+	return strings.Repeat("?,", n-1) + "?"
 }
