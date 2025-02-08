@@ -1,10 +1,13 @@
 # quiver
 
-Vectorized Search for Structured Data
+[![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/quiver)](https://goreportcard.com/report/github.com/TFMV/quiver)
+[![GoDoc](https://pkg.go.dev/badge/github.com/TFMV/quiver)](https://pkg.go.dev/github.com/TFMV/quiver)
 
-It is thread safe and uses a lock to ensure that only one thread can access the index at a time.
+Quiver is a lightweight vector database optimized for structured datasets. It integrates Apache Arrow Tables with Approximate Nearest Neighbors (ANN) search, leveraging Hierarchical Navigable Small World (HNSW) graphs for efficient high-dimensional vector retrieval.
 
-![logo](assets/quiver.png)
+DuckDB is used as the underlying database to store and retrieve vector data.
+
+The Vector Index is thread safe and uses a lock to ensure that only one thread can access the index at a time.
 
 ## Overview
 
