@@ -34,3 +34,7 @@ bench.hnsw
 *.db-lock
 *.db-trace
 *.hnsw
+
+# Python
+python/
+data/

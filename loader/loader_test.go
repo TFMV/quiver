@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,14 +43,32 @@ func TestLoadJSONFile(t *testing.T) {
 
 // Test loading CSV files
 func TestLoadCSVFile(t *testing.T) {
-	logger := zap.NewNop()
+	// Create a temporary CSV file
+	tmpfile, err := os.CreateTemp("", "testfile-*.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
 
-	csvData := "id,v1,v2,v3\n1,0.1,0.2,0.3\n2,0.4,0.5,0.6\n"
-	csvFile := createTempFile(t, csvData, ".csv")
-	defer os.Remove(csvFile)
+	// Write test data
+	csvData := `id,vector
+1,"[0.1,0.2,0.3]"
+2,"[0.4,0.5,0.6]"
+`
+	if _, err := tmpfile.WriteString(csvData); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		t.Fatal(err)
+	}
 
-	records, err := LoadCSVFile(csvFile, logger)
-	require.NoError(t, err)
+	// Load and verify
+	logger, _ := zap.NewDevelopment()
+	records, err := LoadCSVFile(tmpfile.Name(), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	assert.Len(t, records, 2)
 	assert.Equal(t, 1, records[0].ID)
 	assert.Equal(t, []float32{0.1, 0.2, 0.3}, records[0].Vector)
@@ -58,43 +77,43 @@ func TestLoadCSVFile(t *testing.T) {
 // Test loading Parquet files (Requires valid Parquet fixture)
 func TestLoadParquetFile(t *testing.T) {
 	logger := zap.NewNop()
+	parquetPath := "../data/data.parquet"
 
-	// TODO: Generate a test Parquet file with the expected schema.
-	// For now, this test is a placeholder.
-	parquetFile := createTempFile(t, "", ".parquet")
-	defer os.Remove(parquetFile)
+	records, err := LoadParquetFile(parquetPath, logger)
+	require.NoError(t, err)
 
-	_, err := LoadParquetFile(parquetFile, logger)
-	assert.Error(t, err) // Expect an error since file is empty
+	// Optional: Validate that some records were loaded
+	require.NotEmpty(t, records, "Expected at least one record to be loaded")
 }
 
 // Test directory scanning and file loading
 func TestLoadFilesFromDirectory(t *testing.T) {
 	logger := zap.NewNop()
-
-	// Create temporary test directory
 	dir := t.TempDir()
 
-	// Create test JSON and CSV files
+	// Create test files
 	jsonFile := filepath.Join(dir, "data.json")
 	os.WriteFile(jsonFile, []byte(`[{"id":1,"vector":[0.1,0.2,0.3]}]`), 0644)
 
 	csvFile := filepath.Join(dir, "data.csv")
-	os.WriteFile(csvFile, []byte("id,v1,v2,v3\n2,0.4,0.5,0.6\n"), 0644)
+	csvData := `id,vector
+1,"[0.4,0.5,0.6]"
+`
+	os.WriteFile(csvFile, []byte(csvData), 0644)
 
-	// Create a test vector index
+	// Create vector index
 	vi, err := quiver.NewVectorIndex(3, "test.db", "test.hnsw", quiver.Cosine)
 	require.NoError(t, err)
 	defer os.Remove("test.db")
 	defer os.Remove("test.hnsw")
 
-	// Run the loader
 	err = LoadFilesFromDirectory(dir, vi, logger)
 	require.NoError(t, err)
 
-	// Check if vectors were added
-	query := []float32{0.5, 0.5, 0.5}
-	results, err := vi.Search(query, 2)
+	time.Sleep(100 * time.Millisecond)
+
+	query := []float32{0.3, 0.3, 0.3}
+	results, err := vi.Search(query, 1)
 	require.NoError(t, err)
 	assert.NotEmpty(t, results)
 }

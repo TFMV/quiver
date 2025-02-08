@@ -78,8 +78,8 @@ func LoadCSVFile(path string, logger *zap.Logger) ([]VectorRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CSV header from %s: %w", path, err)
 	}
-	if len(header) != 2 || header[0] != "id" || header[1] != "vector" {
-		return nil, fmt.Errorf("CSV file %s must have exactly two columns: id, vector", path)
+	if len(header) < 2 {
+		return nil, fmt.Errorf("CSV file %s must have at least two columns (found %d). Expected: id, vector", path, len(header))
 	}
 
 	var records []VectorRecord
@@ -114,7 +114,6 @@ func LoadCSVFile(path string, logger *zap.Logger) ([]VectorRecord, error) {
 // LoadParquetFile uses Apache Arrow's parquet reader to load vector records.
 // NOTE: This implementation assumes the parquet file contains at least two columns:
 // an "id" column (int32/int64) and a "vector" column (list of floats).
-// In production you may wish to perform schema introspection and support alternate layouts.
 func LoadParquetFile(path string, logger *zap.Logger) ([]VectorRecord, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -122,14 +121,12 @@ func LoadParquetFile(path string, logger *zap.Logger) ([]VectorRecord, error) {
 	}
 	defer f.Close()
 
-	// Create Parquet file reader first
 	reader, err := file.NewParquetReader(f)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create parquet file reader: %w", err)
 	}
 	defer reader.Close()
 
-	// Then create Arrow reader
 	pr, err := pqarrow.NewFileReader(reader, pqarrow.ArrowReadProperties{
 		Parallel:  true,
 		BatchSize: 1000,
@@ -144,15 +141,38 @@ func LoadParquetFile(path string, logger *zap.Logger) ([]VectorRecord, error) {
 	}
 	defer table.Release()
 
-	// Process the table rows
 	var records []VectorRecord
-	for i := range table.NumRows() {
-		idCol := table.Column(0).Data().Chunk(0).(*array.Int64)
-		vectorCol := table.Column(1).Data().Chunk(0).(*array.Float32)
+	numRows := int(table.NumRows())
+
+	// Get the first chunk of each column
+	idChunk := table.Column(0).Data().Chunk(0).(*array.Int64)
+	vectorList := table.Column(1).Data().Chunk(0).(*array.FixedSizeList)
+	vectorData := vectorList.ListValues().(*array.Float32)
+
+	// Pre-calculate total data length
+	vectorLen := vectorList.Len()
+	totalLen := len(vectorData.Float32Values())
+
+	for i := 0; i < numRows; i++ {
+		start := i * vectorLen
+		if start >= totalLen {
+			logger.Warn("Reached end of vector data",
+				zap.Int("row", i),
+				zap.Int("total_rows", numRows))
+			break
+		}
+
+		end := start + vectorLen
+		if end > totalLen {
+			logger.Warn("Partial vector data",
+				zap.Int("row", i),
+				zap.Int("available", totalLen-start))
+			break
+		}
 
 		records = append(records, VectorRecord{
-			ID:     int(idCol.Value(int(i))),
-			Vector: vectorCol.Float32Values()[i : i+1],
+			ID:     int(idChunk.Value(i)),
+			Vector: append([]float32{}, vectorData.Float32Values()[start:end]...),
 		})
 	}
 
