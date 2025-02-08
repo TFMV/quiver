@@ -4,6 +4,8 @@ Vectorized Search for Structured Data
 
 It is thread safe and uses a lock to ensure that only one thread can access the index at a time.
 
+![logo](assets/quiver.png)
+
 ## Overview
 
 Quiver is a lightweight vector database optimized for structured datasets. It integrates Apache Arrow Tables with Approximate Nearest Neighbors (ANN) search, leveraging Hierarchical Navigable Small World (HNSW) graphs for efficient high-dimensional vector retrieval.
