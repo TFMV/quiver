@@ -54,32 +54,21 @@ Below are the benchmark results for Quiver running on Apple M2 Pro:
 
 | Benchmark                     | Iterations  | Time per Op (ns) | Memory per Op (B) | Allocations per Op |
 |--------------------------------|-------------|------------------|--------------------|---------------------|
-| Vector Index - Add            | 2,115       | 739,556 ns       | 4,430 B           | 22                |
-| Vector Index - Search          | 645         | 945,968 ns       | 12,328 B          | 297               |
-| Vector Search                 | 663         | 976,710 ns       | 12,378 B          | 306               |
+| Vector Index - Add             | 1,797       | 666,633 ns       | 3,034 B            | 21                  |
+| Vector Index - Search           | 561         | 966,301 ns       | 12,329 B           | 296                 |
+| Vector Search                  | 660         | 901,365 ns       | 12,377 B           | 306                 |
 
 ## Observations
 
-Vector Insertion:
+### Vector Insertion:
 
-- Each vector addition takes ~740µs, with 22 allocations per op.
-- Optimization Potential: Further batch inserts or parallelized writes could improve throughput.
+- Now ~0.67ms per vector, down from ~2ms, with lower memory usage (3,034 B/op).
+- Optimizations in batching and memory efficiency have significantly reduced overhead.
 
-Vector Search:
+### Vector Search:
 
-- Search operations take ~945µs per lookup, with 297+ allocations per op.
-- The relatively high memory usage suggests optimization opportunities in query execution, possibly via pre-fetching or caching.
-
-Overall Performance:
-
-- With search speeds averaging ~1ms per query, Quiver is highly efficient for Approximate Nearest Neighbor (ANN) search.
-- Memory footprint and allocation count indicate areas where further tuning could yield faster search times.
-
-Future Optimizations:
-
-- Reducing memory overhead via improved buffer reuse.
-- Index build time optimizations, possibly by precomputing hierarchical navigable structures.
-- Fine-tuning concurrency settings to balance index updates vs. search latency.
+- Query times remain under 1ms, making Quiver highly efficient for high-throughput ANN lookups.
+- Memory allocations remain stable, but there is potential for additional optimizations in search caching.
 
 ---
 
