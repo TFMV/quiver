@@ -23,3 +23,14 @@ go.work.sum
 
 # env file
 .env
+
+# benchmark results
+bench.db
+bench.hnsw
+*.wal
+*.db
+*.db-shm
+*.db-wal
+*.db-lock
+*.db-trace
+*.hnsw
