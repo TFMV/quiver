@@ -3,6 +3,7 @@
 package quiver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -27,15 +28,22 @@ const (
 )
 
 // VectorIndex encapsulates an HNSW index, a DuckDB connection and an appender,
-// along with a structured logger and a mutex for concurrency safety.
+// along with a structured logger and separate mutexes for index vs. DB operations.
 type VectorIndex struct {
-	mu        sync.RWMutex
+	// indexMu guards operations on the HNSW index.
+	indexMu sync.RWMutex
+	// dbMu guards operations on the DuckDB appender (if not inherently thread–safe).
+	dbMu sync.Mutex
+
 	index     *hnsw.HnswIndex
 	db        *sql.DB
 	dbPath    string
 	indexPath string
 	appender  *duckdb.Appender
 	logger    *zap.Logger
+
+	// bufferPool is used to reuse JSON encoding buffers to reduce allocations.
+	bufferPool sync.Pool
 }
 
 // initDB initializes DuckDB and creates the required table.
@@ -82,7 +90,7 @@ func NewVectorIndex(dim int, dbPath, indexPath string, metric SpaceType) (*Vecto
 	}
 	// NOTE: Do not defer logger.Sync() here. Instead, call Close() on VectorIndex when done.
 
-	const maxElements = 200000 // Increase from 10000
+	const maxElements = 200000 // Increased capacity for large datasets
 
 	logger.Info("Initializing HNSW Index", zap.Int("maxElements", maxElements))
 
@@ -95,7 +103,7 @@ func NewVectorIndex(dim int, dbPath, indexPath string, metric SpaceType) (*Vecto
 		spaceType = 3 // CosineSpace in hnswgo.
 	}
 
-	// Create a new HNSW index with increased capacity
+	// Create a new HNSW index with increased capacity.
 	index := hnsw.New(dim, 32, maxElements, 100, spaceType, hnsw.SpaceType(spaceType), true)
 	index.ResizeIndex(maxElements)
 
@@ -115,47 +123,58 @@ func NewVectorIndex(dim int, dbPath, indexPath string, metric SpaceType) (*Vecto
 		return nil, err
 	}
 
-	return &VectorIndex{
+	vi := &VectorIndex{
 		index:     index,
 		db:        db,
 		appender:  appender,
 		dbPath:    dbPath,
 		indexPath: indexPath,
 		logger:    logger,
-	}, nil
+		bufferPool: sync.Pool{
+			New: func() interface{} {
+				return new(bytes.Buffer)
+			},
+		},
+	}
+	return vi, nil
 }
 
 // AddVector inserts a vector into both the DuckDB storage and the HNSW index.
-// It locks the index during the operation to ensure thread safety.
+// The DB update and index update are done under separate locks to reduce contention.
 func (vi *VectorIndex) AddVector(id int, vector []float32) error {
-	vi.mu.Lock()
-	defer vi.mu.Unlock()
-
-	vectorJSON, err := json.Marshal(vector)
-	if err != nil {
-		vi.logger.Error("Failed to marshal vector", zap.Int("id", id), zap.Error(err))
-		return fmt.Errorf("failed to marshal vector: %w", err)
+	// Reuse a buffer from the pool to encode JSON.
+	buf := vi.bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	encoder := json.NewEncoder(buf)
+	if err := encoder.Encode(vector); err != nil {
+		vi.logger.Error("Failed to encode vector", zap.Int("id", id), zap.Error(err))
+		vi.bufferPool.Put(buf)
+		return fmt.Errorf("failed to encode vector: %w", err)
 	}
+	// Remove trailing newline that Encoder adds.
+	vectorJSON := strings.TrimSpace(buf.String())
+	vi.bufferPool.Put(buf)
 
-	// Append row to DuckDB.
-	_, err = vi.db.Exec("INSERT OR REPLACE INTO vectors (id, vector) VALUES (?, ?)", id, string(vectorJSON))
+	// First, update DuckDB (the DB driver is thread-safe, but we synchronize flush operations).
+	_, err := vi.db.Exec("INSERT OR REPLACE INTO vectors (id, vector) VALUES (?, ?)", id, vectorJSON)
 	if err != nil {
 		vi.logger.Error("Failed to insert vector into DuckDB", zap.Int("id", id), zap.Error(err))
 		return fmt.Errorf("failed to insert vector into DuckDB: %w", err)
 	}
+	vi.dbMu.Lock()
+	if err := vi.appender.Flush(); err != nil {
+		vi.logger.Error("Failed to flush DuckDB appender", zap.Int("id", id), zap.Error(err))
+		vi.dbMu.Unlock()
+		return fmt.Errorf("failed to flush appender: %w", err)
+	}
+	vi.dbMu.Unlock()
 
-	// Add vector to the HNSW index.
+	// Next, update the HNSW index.
+	vi.indexMu.Lock()
+	defer vi.indexMu.Unlock()
 	if err := vi.index.AddPoints([][]float32{vector}, []uint64{uint64(id)}, 2, true); err != nil {
 		vi.logger.Error("Failed to add vector to HNSW index", zap.Int("id", id), zap.Error(err))
 		return fmt.Errorf("failed to add vector to index: %w", err)
-	}
-
-	// Flush the appender to commit the insert.
-	// NOTE: Depending on performance requirements, flushing per insertion may be deferred
-	// to a periodic or batch flush. This decision affects durability vs. throughput.
-	if err := vi.appender.Flush(); err != nil {
-		vi.logger.Error("Failed to flush DuckDB appender", zap.Int("id", id), zap.Error(err))
-		return fmt.Errorf("failed to flush appender: %w", err)
 	}
 
 	return nil
@@ -163,12 +182,10 @@ func (vi *VectorIndex) AddVector(id int, vector []float32) error {
 
 // Search performs a k-nearest neighbors search on the HNSW index using the provided query vector.
 // It then retrieves and returns the corresponding IDs from DuckDB.
-// TODO: Consider leveraging Apache Arrow for columnar data processing on search results if needed.
 func (vi *VectorIndex) Search(query []float32, k int) ([]int, error) {
-	vi.mu.RLock()
-	defer vi.mu.RUnlock()
-
+	vi.indexMu.RLock()
 	hnswResults, err := vi.index.SearchKNN([][]float32{query}, k, 2)
+	vi.indexMu.RUnlock()
 	if err != nil {
 		vi.logger.Error("Search error in HNSW", zap.Error(err))
 		return nil, fmt.Errorf("HNSW search error: %w", err)
@@ -179,14 +196,14 @@ func (vi *VectorIndex) Search(query []float32, k int) ([]int, error) {
 		return []int{}, nil
 	}
 
-	// Collect IDs from HNSW search results
+	// Collect IDs from HNSW search results.
 	ids := make([]uint64, len(hnswResults[0]))
 	idMap := make(map[uint64]int)
 	for i, r := range hnswResults[0] {
 		ids[i] = r.Label
 	}
 
-	// Batch retrieve IDs from DuckDB.
+	// Retrieve IDs from DuckDB.
 	stmt, err := vi.db.Prepare("SELECT id FROM vectors WHERE id = ?")
 	if err != nil {
 		return nil, fmt.Errorf("DuckDB query prep error: %w", err)
@@ -218,16 +235,16 @@ func (vi *VectorIndex) Search(query []float32, k int) ([]int, error) {
 }
 
 // Save persists the current state of the HNSW index to disk and flushes the DuckDB appender.
-// It returns an error if saving fails.
 func (vi *VectorIndex) Save() error {
-	vi.mu.Lock()
-	defer vi.mu.Unlock()
-
+	vi.indexMu.Lock()
+	defer vi.indexMu.Unlock()
 	vi.logger.Info("Saving HNSW index to disk", zap.String("path", vi.indexPath))
 	vi.index.Save(vi.indexPath)
 
+	vi.dbMu.Lock()
+	defer vi.dbMu.Unlock()
 	if err := vi.appender.Flush(); err != nil {
-		vi.logger.Error("Failed to flush DuckDB appender", zap.Error(err))
+		vi.logger.Error("Failed to flush DuckDB appender during Save", zap.Error(err))
 		return fmt.Errorf("failed to flush DuckDB appender: %w", err)
 	}
 
@@ -237,8 +254,11 @@ func (vi *VectorIndex) Save() error {
 // Close releases resources held by the VectorIndex.
 // It closes the DuckDB connection and flushes the logger.
 func (vi *VectorIndex) Close() error {
-	vi.mu.Lock()
-	defer vi.mu.Unlock()
+	// Acquire both locks to ensure no operation is in progress.
+	vi.indexMu.Lock()
+	vi.dbMu.Lock()
+	defer vi.indexMu.Unlock()
+	defer vi.dbMu.Unlock()
 
 	var errs []string
 
@@ -267,8 +287,9 @@ func uint64SliceToString(slice []uint64) string {
 	return strings.Join(strs, ",")
 }
 
+// Flush explicitly flushes the DuckDB appender.
 func (vi *VectorIndex) Flush() error {
-	vi.mu.Lock()
-	defer vi.mu.Unlock()
+	vi.dbMu.Lock()
+	defer vi.dbMu.Unlock()
 	return vi.appender.Flush()
 }
