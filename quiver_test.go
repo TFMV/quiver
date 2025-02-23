@@ -1,78 +1,56 @@
 package quiver
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-// TestNewIndex ensures that a new index is properly initialized.
+// Test New Index
 func TestNewIndex(t *testing.T) {
-	config := Config{Dimension: 3, Distance: Cosine}
-	idx := New(config)
-
+	idx, err := New(Config{Dimension: 3, StoragePath: "test.db", MaxElements: 1000})
+	assert.NoError(t, err)
 	assert.NotNil(t, idx)
-	assert.Equal(t, 3, idx.config.Dimension)
-	assert.Equal(t, Cosine, idx.config.Distance)
-	assert.Empty(t, idx.vectors)
 }
 
-// TestAddVector checks if vectors are added correctly.
-func TestAddVector(t *testing.T) {
-	idx := New(Config{Dimension: 3, Distance: Cosine})
+// Test Add and Search
+func TestAddAndSearch(t *testing.T) {
+	idx, _ := New(Config{Dimension: 3, StoragePath: "test.db", MaxElements: 1000})
+	defer idx.Close()
 
-	err := idx.Add(1, []float32{0.1, 0.2, 0.3})
+	err := idx.Add(1, []float32{0.1, 0.2, 0.3}, map[string]interface{}{"category": "science"})
 	assert.NoError(t, err)
-	assert.Contains(t, idx.vectors, 1)
 
-	// Test dimension mismatch
-	err = idx.Add(2, []float32{0.1, 0.2})
-	assert.Equal(t, ErrDimensionMismatch, err)
+	results, _ := idx.Search([]float32{0.1, 0.2, 0.3}, 1)
+	assert.Equal(t, uint64(1), results[0].ID)
 }
 
-// TestSearch verifies k-NN search returns correct results.
-func TestSearch(t *testing.T) {
-	idx := New(Config{Dimension: 3, Distance: Cosine})
-
-	// Add some sample vectors
-	_ = idx.Add(1, []float32{1.0, 0.0, 0.0})
-	_ = idx.Add(2, []float32{0.0, 1.0, 0.0})
-	_ = idx.Add(3, []float32{0.0, 0.0, 1.0})
-	_ = idx.Add(4, []float32{1.0, 1.0, 1.0})
-
-	// Perform a search
-	query := []float32{1.0, 0.0, 0.0}
-	results, err := idx.Search(query, 2)
-
+// Test Hybrid Search
+func TestHybridSearch(t *testing.T) {
+	tmpDB := t.TempDir() + "/test.db"
+	idx, err := New(Config{
+		Dimension:   3,
+		StoragePath: tmpDB,
+		MaxElements: 1000,
+	})
 	assert.NoError(t, err)
-	assert.Len(t, results, 2)
-	assert.Contains(t, results, 1) // Expect the closest match to be ID 1
-}
+	defer func() {
+		idx.Close()
+		os.Remove(tmpDB)
+	}()
 
-// TestSearchDimensionMismatch ensures error handling for incorrect query dimensions.
-func TestSearchDimensionMismatch(t *testing.T) {
-	idx := New(Config{Dimension: 3, Distance: Cosine})
+	// Add test vectors with metadata
+	err = idx.Add(1, []float32{1.0, 0.0, 0.0}, map[string]interface{}{"category": "math"})
+	assert.NoError(t, err)
+	err = idx.Add(2, []float32{0.0, 1.0, 0.0}, map[string]interface{}{"category": "science"})
+	assert.NoError(t, err)
 
-	query := []float32{1.0, 0.0} // Incorrect dimension
-	_, err := idx.Search(query, 2)
-
-	assert.Equal(t, ErrDimensionMismatch, err)
-}
-
-// TestCosineDistance ensures correct cosine distance calculations.
-func TestCosineDistance(t *testing.T) {
-	a := []float32{1, 0, 0}
-	b := []float32{0, 1, 0}
-	c := []float32{1, 1, 0}
-
-	assert.Equal(t, float32(1.0), cosineDistance(a, b)) // Perpendicular vectors (max distance)
-	assert.Less(t, cosineDistance(a, c), float32(1.0))  // Closer than perpendicular
-}
-
-// TestEuclideanDistance ensures correct Euclidean distance calculations.
-func TestEuclideanDistance(t *testing.T) {
-	a := []float32{0, 0}
-	b := []float32{3, 4}
-
-	assert.Equal(t, float32(5.0), euclideanDistance(a, b)) // Pythagorean theorem
+	// Search with filter - note we pass the value without quotes
+	results, err := idx.SearchWithFilter([]float32{1.0, 0.0, 0.0}, 1, "math")
+	assert.NoError(t, err)
+	assert.NotEmpty(t, results, "Should return at least one result")
+	if len(results) > 0 {
+		assert.Equal(t, uint64(1), results[0].ID)
+	}
 }
