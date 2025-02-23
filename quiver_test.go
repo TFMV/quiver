@@ -1,129 +1,78 @@
-package quiver_test
+package quiver
 
 import (
-	"os"
 	"testing"
 
-	quiver "github.com/TFMV/quiver"
 	"github.com/stretchr/testify/assert"
 )
 
-func cleanupTest(t testing.TB, paths ...string) {
-	for _, path := range paths {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			t.Logf("Failed to cleanup %s: %v", path, err)
-		}
-	}
+// TestNewIndex ensures that a new index is properly initialized.
+func TestNewIndex(t *testing.T) {
+	config := Config{Dimension: 3, Distance: Cosine}
+	idx := New(config)
+
+	assert.NotNil(t, idx)
+	assert.Equal(t, 3, idx.config.Dimension)
+	assert.Equal(t, Cosine, idx.config.Distance)
+	assert.Empty(t, idx.vectors)
 }
 
-func TestVectorIndex_AddAndSearch(t *testing.T) {
-	defer cleanupTest(t, "test_index.hnsw", "test_index.duckdb")
-	index, err := quiver.NewVectorIndex(3, "test_index.hnsw", "test_index.duckdb", quiver.Cosine)
-	if err != nil {
-		t.Fatalf("Failed to create vector index: %v", err)
-	}
+// TestAddVector checks if vectors are added correctly.
+func TestAddVector(t *testing.T) {
+	idx := New(Config{Dimension: 3, Distance: Cosine})
 
-	vectors := [][]float32{
-		{0.1, 0.2, 0.3},
-		{0.9, 0.8, 0.7},
-		{0.4, 0.5, 0.6},
-	}
+	err := idx.Add(1, []float32{0.1, 0.2, 0.3})
+	assert.NoError(t, err)
+	assert.Contains(t, idx.vectors, 1)
 
-	for i, vec := range vectors {
-		index.AddVector(i, vec)
-	}
-
-	query := []float32{0.5, 0.5, 0.5}
-	neighbors, _ := index.Search(query, 2)
-
-	assert.NotEmpty(t, neighbors, "Neighbors should not be empty")
-	assert.Contains(t, neighbors, 2, "Expected vector 2 to be a neighbor")
+	// Test dimension mismatch
+	err = idx.Add(2, []float32{0.1, 0.2})
+	assert.Equal(t, ErrDimensionMismatch, err)
 }
 
-func TestVectorIndex_SaveLoad(t *testing.T) {
-	defer cleanupTest(t, "test_index.hnsw", "test.db")
-	// Create and populate index
-	index, err := quiver.NewVectorIndex(3, "test.db", "test_index.hnsw", quiver.Cosine)
-	if err != nil {
-		t.Fatalf("Failed to create vector index: %v", err)
-	}
-	index.AddVector(1, []float32{0.1, 0.2, 0.3})
+// TestSearch verifies k-NN search returns correct results.
+func TestSearch(t *testing.T) {
+	idx := New(Config{Dimension: 3, Distance: Cosine})
 
-	// Save index
-	index.Save()
+	// Add some sample vectors
+	_ = idx.Add(1, []float32{1.0, 0.0, 0.0})
+	_ = idx.Add(2, []float32{0.0, 1.0, 0.0})
+	_ = idx.Add(3, []float32{0.0, 0.0, 1.0})
+	_ = idx.Add(4, []float32{1.0, 1.0, 1.0})
 
-	// Load index
-	loadedIndex, err := quiver.NewVectorIndex(3, "test.db", "test_index.hnsw", quiver.Cosine)
-	if err != nil {
-		t.Fatalf("Failed to load vector index: %v", err)
-	}
+	// Perform a search
+	query := []float32{1.0, 0.0, 0.0}
+	results, err := idx.Search(query, 2)
 
-	neighbors, _ := loadedIndex.Search([]float32{0.1, 0.2, 0.3}, 1)
-	assert.Equal(t, []int{1}, neighbors, "Loaded index should return correct neighbor")
+	assert.NoError(t, err)
+	assert.Len(t, results, 2)
+	assert.Contains(t, results, 1) // Expect the closest match to be ID 1
 }
 
-func TestVectorIndex_DistanceMetrics(t *testing.T) {
-	defer cleanupTest(t, "test.db", "test_index.hnsw")
-	indexCosine, err := quiver.NewVectorIndex(3, "test.db", "test_index.hnsw", quiver.Cosine)
-	if err != nil {
-		t.Fatalf("Failed to create vector index: %v", err)
-	}
-	indexEuclidean, err := quiver.NewVectorIndex(3, "test.db", "test_index.hnsw", quiver.Euclidean)
-	if err != nil {
-		t.Fatalf("Failed to create vector index: %v", err)
-	}
+// TestSearchDimensionMismatch ensures error handling for incorrect query dimensions.
+func TestSearchDimensionMismatch(t *testing.T) {
+	idx := New(Config{Dimension: 3, Distance: Cosine})
 
-	vectors := [][]float32{
-		{0.1, 0.2, 0.3},
-		{0.9, 0.8, 0.7},
-		{0.4, 0.5, 0.6},
-	}
+	query := []float32{1.0, 0.0} // Incorrect dimension
+	_, err := idx.Search(query, 2)
 
-	for i, vec := range vectors {
-		if err := indexCosine.AddVector(i, vec); err != nil {
-			t.Fatalf("Failed to add vector to cosine index: %v", err)
-		}
-		if err := indexEuclidean.AddVector(i, vec); err != nil {
-			t.Fatalf("Failed to add vector to euclidean index: %v", err)
-		}
-	}
-
-	query := []float32{0.5, 0.5, 0.5}
-	cosineNeighbors, err := indexCosine.Search(query, 2)
-	if err != nil {
-		t.Fatalf("Failed to search cosine index: %v", err)
-	}
-	euclideanNeighbors, err := indexEuclidean.Search(query, 2)
-	if err != nil {
-		t.Fatalf("Failed to search euclidean index: %v", err)
-	}
-
-	assert.NotEmpty(t, cosineNeighbors, "Cosine neighbors should not be empty")
-	assert.NotEmpty(t, euclideanNeighbors, "Euclidean neighbors should not be empty")
-	assert.NotEqual(t, cosineNeighbors, euclideanNeighbors, "Different metrics should yield different neighbors")
+	assert.Equal(t, ErrDimensionMismatch, err)
 }
 
-func BenchmarkVectorSearch(b *testing.B) {
-	defer cleanupTest(b, "test_index.hnsw", "test_index.duckdb")
-	index, err := quiver.NewVectorIndex(128, "test_index.hnsw", "test_index.duckdb", quiver.Cosine)
-	if err != nil {
-		b.Fatalf("Failed to create vector index: %v", err)
-	}
-	for i := range 10000 {
-		vec := make([]float32, 128)
-		for j := range vec {
-			vec[j] = float32(i % 10)
-		}
-		index.AddVector(i, vec)
-	}
+// TestCosineDistance ensures correct cosine distance calculations.
+func TestCosineDistance(t *testing.T) {
+	a := []float32{1, 0, 0}
+	b := []float32{0, 1, 0}
+	c := []float32{1, 1, 0}
 
-	query := make([]float32, 128)
-	for i := range query {
-		query[i] = 5.0
-	}
+	assert.Equal(t, float32(1.0), cosineDistance(a, b)) // Perpendicular vectors (max distance)
+	assert.Less(t, cosineDistance(a, c), float32(1.0))  // Closer than perpendicular
+}
 
-	b.ResetTimer()
-	for range b.N {
-		index.Search(query, 10)
-	}
+// TestEuclideanDistance ensures correct Euclidean distance calculations.
+func TestEuclideanDistance(t *testing.T) {
+	a := []float32{0, 0}
+	b := []float32{3, 4}
+
+	assert.Equal(t, float32(5.0), euclideanDistance(a, b)) // Pythagorean theorem
 }

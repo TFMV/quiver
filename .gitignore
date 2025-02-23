@@ -38,3 +38,6 @@ bench.hnsw
 # Python
 python/
 data/
+testdata/
+.venv/
+.DS_Store
