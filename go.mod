@@ -1,16 +1,15 @@
 module github.com/TFMV/quiver
 
-go 1.23.0
+go 1.24
 
 require (
 	github.com/TFMV/hnswgo v0.0.0-20250208130236-ede5ef683944
-	github.com/apache/arrow/go/v18 v18.0.0-20241007013041-ab95a4d25142
+	github.com/apache/arrow-go/v18 v18.1.0
 	github.com/marcboeker/go-duckdb v1.8.4
 	github.com/stretchr/testify v1.10.0
 )
 
 require (
-	github.com/apache/arrow-go/v18 v18.1.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
