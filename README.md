@@ -1,4 +1,4 @@
-# Quiver
+![Quiver](assets/quiver.png)
 
 Blazing-Fast, Embeddable, Structured Vector Search in Go
 
