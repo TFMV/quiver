@@ -56,11 +56,13 @@ flowchart TD
 
 ## 📦 Example Usage
 
+Please note that Quiver uses zap for logging. Callers are responsible for providing a logger.
+
 ```go
 // Initialize Quiver
 index, _ := quiver.New(quiver.Config{
     Dimension: 128, StoragePath: "data.db", MaxElements: 10000,
-})
+}, testLogger)
 
 // Insert a vector
 vector := []float32{0.1, 0.2, 0.3, ...}
@@ -92,19 +94,19 @@ index.Close()
 - **Flexible**: Supports various distance metrics (e.g., Euclidean, Cosine)
 - **Configurable**: Customize HNSW parameters for optimal performance
 
-## :small_airplane: Performance
+## 🚀 Performance
 
-The following benchmarks were performed on a 2024 MacBook Pro with an M2 Pro CPU.
+The following benchmarks were performed on a 2023 MacBook Pro with an M2 Pro CPU:
 
-| Operation | Operations/sec | Latency | Memory (B/op) | Allocations (allocs/op) |
-|-----------|---------------|--------------|---------------|------------------------|
-| Add | 4,872 | 3.178ms | 1,389 | 21 |
-| Search | 30,246 | 44.338µs | 1,520 | 18 |
-| Hybrid Search | 2,395 | 431.622µs | 7,533 | 278 |
-| Add Parallel | 2,850 | 6.088ms | 1,282 | 19 |
-| Arrow Append | 100 | 2.770s | 2,336,470 | 32377 |
+| Operation | Throughput | Latency | Memory/Op | Allocs/Op |
+|-----------|------------|---------|-----------|------------|
+| Add | 5.5K ops/sec | 3.2ms | 1.4 KB | 21 |
+| Search | 28.8K ops/sec | 41µs | 1.5 KB | 18 |
+| Hybrid Search | 2.5K ops/sec | 432µs | 7.5 KB | 278 |
+| Add Parallel | 4.5K ops/sec | 5.3ms | 1.3 KB | 20 |
+| Arrow Append* | 100 ops/sec | 2.7s | 2.3 MB | 32,332 |
 
-Benchmark details:
+Benchmark configuration:
 
 - Vector dimension: 128
 - Dataset size: 10,000 vectors
@@ -112,8 +114,13 @@ Benchmark details:
 - HNSW efConstruction: 200
 - HNSW efSearch: 200
 - Batch size: 1,000
+- Storage: In-memory DuckDB
 
-Benchmark notes:
+*Note: Arrow Append processes 1,000 vectors per operation, making its effective throughput ~100K vectors/sec.
 
-- Arrow Append is a one-time operation that pre-allocates memory for the entire dataset.
-- The other benchmarks are for typical insert/search operations.
+Key observations:
+
+- Super-fast Search 🏹 → 41µs/query
+- Hybrid search (with metadata filtering) adds only ~390µs overhead
+- Parallel adds achieve ~4.5K concurrent insertions/sec
+- Arrow batch insertions provide highest throughput for bulk loading

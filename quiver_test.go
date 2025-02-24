@@ -13,10 +13,22 @@ import (
 	"go.uber.org/zap"
 )
 
-var testLogger *zap.Logger
+var (
+	testLogger  *zap.Logger
+	benchLogger *zap.Logger
+)
 
 func init() {
-	testLogger, _ = zap.NewDevelopment()
+	testLogger, _ = zap.NewProduction(
+		zap.Fields(zap.String("test", "quiver_test")),
+	)
+
+	// Create error-only logger for benchmarks
+	cfg := zap.NewProductionConfig()
+	cfg.Level = zap.NewAtomicLevelAt(zap.ErrorLevel)
+	benchLogger, _ = cfg.Build(
+		zap.Fields(zap.String("test", "quiver_bench")),
+	)
 }
 
 // Test New Index
@@ -124,14 +136,14 @@ func TestHybridSearch(t *testing.T) {
 func BenchmarkAdd(b *testing.B) {
 	idx, err := New(Config{
 		Dimension:       128,
-		StoragePath:     b.TempDir() + "/bench.db",
+		StoragePath:     "",
 		MaxElements:     100000,
 		HNSWM:           32,
 		HNSWEfConstruct: 200,
 		HNSWEfSearch:    200,
 		BatchSize:       1000,
 		Distance:        Cosine,
-	}, testLogger)
+	}, benchLogger)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -156,14 +168,14 @@ func BenchmarkSearch(b *testing.B) {
 	// Setup index with test data
 	idx, err := New(Config{
 		Dimension:       128,
-		StoragePath:     b.TempDir() + "/bench.db",
+		StoragePath:     "",
 		MaxElements:     100000,
 		HNSWM:           32,
 		HNSWEfConstruct: 200,
 		HNSWEfSearch:    200,
 		BatchSize:       1000,
 		Distance:        Cosine,
-	}, testLogger)
+	}, benchLogger)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -198,14 +210,14 @@ func BenchmarkSearch(b *testing.B) {
 func BenchmarkHybridSearch(b *testing.B) {
 	idx, err := New(Config{
 		Dimension:       128,
-		StoragePath:     b.TempDir() + "/bench.db",
+		StoragePath:     "",
 		MaxElements:     100000,
 		HNSWM:           32,
 		HNSWEfConstruct: 200,
 		HNSWEfSearch:    200,
 		BatchSize:       1000,
 		Distance:        Cosine,
-	}, testLogger)
+	}, benchLogger)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -245,14 +257,14 @@ func BenchmarkHybridSearch(b *testing.B) {
 func BenchmarkAddParallel(b *testing.B) {
 	idx, err := New(Config{
 		Dimension:       128,
-		StoragePath:     b.TempDir() + "/bench.db",
+		StoragePath:     "",
 		MaxElements:     100000,
 		HNSWM:           32,
 		HNSWEfConstruct: 200,
 		HNSWEfSearch:    200,
 		BatchSize:       1000,
 		Distance:        Cosine,
-	}, testLogger)
+	}, benchLogger)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -342,14 +354,14 @@ func BenchmarkAppendFromArrow(b *testing.B) {
 	// Create test index
 	idx, err := New(Config{
 		Dimension:       128,
-		StoragePath:     b.TempDir() + "/bench.db",
+		StoragePath:     "",
 		MaxElements:     100000,
 		HNSWM:           32,
 		HNSWEfConstruct: 200,
 		HNSWEfSearch:    200,
 		BatchSize:       1000,
 		Distance:        Cosine,
-	}, testLogger)
+	}, benchLogger)
 	if err != nil {
 		b.Fatal(err)
 	}

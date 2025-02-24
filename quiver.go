@@ -1,3 +1,12 @@
+// Package quiver provides a lightweight, high-performance vector search engine for structured datasets.
+// It uses HNSW for efficient vector indexing and DuckDB for metadata storage.
+//
+// Quiver is designed to be used in conjunction with Arrow tables, which are a popular format for storing and
+// processing tabular data in Go.
+//
+// Quiver supports two distance metrics:
+// - Cosine distance: Measures the angle between two vectors.
+// - L2 distance: Measures the Euclidean distance between two vectors.
 package quiver
 
 import (
