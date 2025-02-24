@@ -10,11 +10,18 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap"
 )
+
+var testLogger *zap.Logger
+
+func init() {
+	testLogger, _ = zap.NewDevelopment()
+}
 
 // Test New Index
 func TestNewIndex(t *testing.T) {
-	idx, err := New(Config{Dimension: 3, StoragePath: "test.db", MaxElements: 1000})
+	idx, err := New(Config{Dimension: 3, StoragePath: "test.db", MaxElements: 1000}, testLogger)
 	assert.NoError(t, err)
 	assert.NotNil(t, idx)
 }
@@ -30,7 +37,7 @@ func TestAddAndSearch(t *testing.T) {
 		HNSWEfSearch:    200,
 		BatchSize:       100,
 		Distance:        Cosine,
-	})
+	}, testLogger)
 	assert.NoError(t, err)
 	defer idx.Close()
 
@@ -72,7 +79,7 @@ func TestHybridSearch(t *testing.T) {
 		HNSWEfSearch:    10,
 		BatchSize:       1, // Set to 1 to force immediate flush
 		Distance:        Cosine,
-	})
+	}, testLogger)
 	assert.NoError(t, err)
 	defer func() {
 		idx.Close()
@@ -124,7 +131,7 @@ func BenchmarkAdd(b *testing.B) {
 		HNSWEfSearch:    200,
 		BatchSize:       1000,
 		Distance:        Cosine,
-	})
+	}, testLogger)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -156,7 +163,7 @@ func BenchmarkSearch(b *testing.B) {
 		HNSWEfSearch:    200,
 		BatchSize:       1000,
 		Distance:        Cosine,
-	})
+	}, testLogger)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -198,7 +205,7 @@ func BenchmarkHybridSearch(b *testing.B) {
 		HNSWEfSearch:    200,
 		BatchSize:       1000,
 		Distance:        Cosine,
-	})
+	}, testLogger)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -245,7 +252,7 @@ func BenchmarkAddParallel(b *testing.B) {
 		HNSWEfSearch:    200,
 		BatchSize:       1000,
 		Distance:        Cosine,
-	})
+	}, testLogger)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -280,7 +287,7 @@ func TestAppendFromArrow(t *testing.T) {
 		HNSWEfSearch:    200,
 		BatchSize:       100,
 		Distance:        Cosine,
-	})
+	}, testLogger)
 	assert.NoError(t, err)
 	defer idx.Close()
 
@@ -342,7 +349,7 @@ func BenchmarkAppendFromArrow(b *testing.B) {
 		HNSWEfSearch:    200,
 		BatchSize:       1000,
 		Distance:        Cosine,
-	})
+	}, testLogger)
 	if err != nil {
 		b.Fatal(err)
 	}
