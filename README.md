@@ -15,98 +15,77 @@ Quiver uses HNSW for efficient vector indexing and DuckDB for metadata storage.
 
 ```mermaid
 flowchart TD
-  %% Initialization Sequence
-  A["Start: Initialize Quiver Index"]
+  A["Start: Initialize Quiver"]
   B["Validate Config"]
-  C["Initialize HNSW Index\n(set dimension, M, efConstruction, etc.)"]
-  D["Open DuckDB Connection\n(using StoragePath)"]
-  E["Create Metadata Table\n(if not exists)"]
-  F["Index Object\n(config, hnsw, db, metadata map,\nbatchBuffer, cache, locks)"]
-  G["Start Background Batch Processor\n(ticker triggers flushBatch)"]
+  C["Initialize HNSW Index"]
+  D["Open DuckDB"]
+  E["Create Metadata Table"]
+  F["Index Object\n(config, hnsw, db, metadata)"]
+  G["Start Batch Processor"]
 
-  A --> B
-  B --> C
-  C --> D
-  D --> E
-  E --> F
-  F --> G
+  A --> B --> C --> D --> E --> F --> G
 
-  %% Vector Insertion Flow
-  H["Receive Add Vector Request\n(id, vector, metadata)"]
-  I["Check Dimension & Append to BatchBuffer"]
-  J["Current Batch Size >= Threshold?"]
-  K["Trigger Async Flush Batch"]
-  L["BatchProcessor: flushBatch()\n(acquire batchLock)"]
-  M["Begin DB Transaction & Prepare SQL Statement"]
-  N["Loop Through BatchBuffer:\n- Store vector in memory\n- Update metadata map & cache\n- Execute SQL insert/update"]
-  O["Call HNSW.AddPoints() to insert vectors"]
-  P["Commit Transaction"]
-  Q["Clear BatchBuffer"]
+  %% Insert Flow
+  H["Add Vector"]
+  I["Validate Dimension & Append to Batch"]
+  J{"Batch Full?"}
+  K["Trigger Async Flush"]
+  L["Flush Batch:\n- Store Vectors\n- Save Metadata\n- Insert into HNSW"]
+  M["Wait for More Data"]
 
-  F --> H
-  H --> I
-  I --> J
-  J -- Yes --> K
-  J -- No --> end_insertion["Wait for ticker"]
-  K --> L
-  L --> M
-  M --> N
-  N --> O
-  O --> P
-  P --> Q
+  F --> H --> I --> J
+  J -- Yes --> K --> L
+  J -- No --> M
 
-  %% Vector Search Flow
-  R["Receive Search Query\n(vector, k)"]
-  S["Acquire Read Lock"]
-  T["Call HNSW.SearchKNN()"]
-  U["For each result:\nRetrieve metadata from in-memory map or cache"]
-  V["Return Search Results (id, distance, metadata)"]
+  %% Search Flow
+  N["Search"]
+  O["Call HNSW.SearchKNN()"]
+  P["Retrieve Metadata"]
+  Q["Return Search Results"]
 
-  F --> R
-  R --> S
-  S --> T
-  T --> U
-  U --> V
+  F --> N --> O --> P --> Q
 
-  %% Search with Metadata Filter Flow
-  W["Receive SearchWithFilter Query\n(vector, k, filter)"]
-  X["Run DuckDB Query to filter metadata"]
-  Y["Get Filtered IDs"]
-  Z{"Is Filtered ID set small?"}
-  AA["Perform HNSW search on query vector only"]
-  AB["Loop through results to match filtered IDs"]
-  AC["Else: Perform full vector search then filter results by metadata"]
-  AD["Return filtered Search Results"]
+  %% Hybrid Search Flow
+  R["Search with Filter"]
+  S["Filter Metadata in DuckDB"]
+  T{"Few Matches?"}
+  U["Vector Search on Filtered IDs"]
+  V["Return Results"]
+  W["Full Vector Search + Metadata Filter"]
 
-  F --> W
-  W --> X
-  X --> Y
-  Y --> Z
-  Z -- Yes --> AA
-  AA --> AB
-  AB --> AD
-  Z -- No --> AC
-  AC --> AD
+  F --> R --> S --> T
+  T -- Yes --> U --> V
+  T -- No --> W --> V
+```
 
-  %% Arrow Integration Flow
-  AE["Receive Arrow Record"]
-  AF["Extract Columns: id, vector (FixedSizeList), metadata (JSON)"]
-  AG["For each row:\n- Unmarshal metadata\n- Build vector slice"]
-  AH["Call Add() for each vector row"]
+## 📦 Example Usage
 
-  F --> AE
-  AE --> AF
-  AF --> AG
-  AG --> AH
+```go
+// Initialize Quiver
+index, _ := quiver.New(quiver.Config{
+    Dimension: 128, StoragePath: "data.db", MaxElements: 10000,
+})
 
-  %% Persistence and Cleanup
-  AI["Save Operation:\n- Flush pending batch\n- Save HNSW index to disk\n- Write metadata.json"]
-  AJ["Load Operation:\n- Load HNSW index from disk\n- Read metadata.json"]
-  AK["Close Operation:\n- Stop ticker\n- Flush remaining batch\n- Free HNSW index\n- Close DuckDB connection"]
+// Insert a vector
+vector := []float32{0.1, 0.2, 0.3, ...}
+index.Add(1, vector, map[string]interface{}{"category": "science"})
 
-  F --> AI
-  F --> AJ
-  F --> AK
+// Perform a search
+results, _ := index.Search(vector, 5)
+fmt.Println("Closest match:", results[0].ID, results[0].Metadata)
+
+// Save the index to disk
+index.Save("index.quiver")
+
+// Load the index from disk
+index, _ = quiver.Load("index.quiver")
+
+// Perform a hybrid search with metadata filter
+filteredResults, _ := index.SearchWithFilter(vector, 5, "category = 'science'")
+fmt.Println("Filtered results:", filteredResults)
+
+// Close the index
+index.Close()
 ```
 
 ## 🌟 Features
