@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/TFMV/hnswgo"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -54,31 +56,33 @@ type Index struct {
 	cache       sync.Map // Caches metadata: key = id, value = metadata map
 	batchTicker *time.Ticker
 	batchDone   chan struct{}
+	logger      *zap.Logger
 }
 
-// New initializes a vector index with HNSW & DuckDB using tunable hyperparameters.
-func New(config Config) (*Index, error) {
-	// Validate config
+// New initializes a vector index with HNSW and DuckDB using tunable hyperparameters.
+// A zap.Logger must be provided for structured logging.
+func New(config Config, logger *zap.Logger) (*Index, error) {
+	// Validate configuration.
 	if config.Dimension <= 0 {
 		return nil, errors.New("dimension must be > 0")
 	}
 	if config.BatchSize <= 0 {
-		config.BatchSize = 100 // Default batch size
+		config.BatchSize = 100 // default batch size
 	}
 	if config.HNSWM <= 16 {
-		config.HNSWM = 32 // Default M
+		config.HNSWM = 32 // default M
 	}
 	if config.HNSWEfConstruct <= 0 {
-		config.HNSWEfConstruct = 200 // Default efConstruction
+		config.HNSWEfConstruct = 200 // default efConstruction
 	}
 	if config.HNSWEfSearch <= 100 {
-		config.HNSWEfSearch = 200 // Default ef for search
+		config.HNSWEfSearch = 200 // default ef for search
 	}
 	if config.MaxElements == 0 {
-		config.MaxElements = 100000 // Default max elements
+		config.MaxElements = 100000 // default max elements
 	}
 
-	// Initialize HNSW index with proper parameters
+	// Set the HNSW space type.
 	var spaceType hnswgo.SpaceType
 	switch config.Distance {
 	case Cosine:
@@ -89,6 +93,7 @@ func New(config Config) (*Index, error) {
 		spaceType = hnswgo.Cosine
 	}
 
+	// Initialize HNSW index.
 	hnsw := hnswgo.New(
 		config.Dimension,
 		config.HNSWM,
@@ -99,21 +104,21 @@ func New(config Config) (*Index, error) {
 		true,
 	)
 
-	// Initialize DuckDB with proper cleanup
+	// Open DuckDB connection.
 	db, err := sql.Open("duckdb", config.StoragePath)
 	if err != nil {
-		hnsw.Free() // Clean up HNSW
+		hnsw.Free()
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
 	}
 
-	// Create metadata table with proper schema
+	// Create metadata table if it does not exist.
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS metadata (
 		id INTEGER PRIMARY KEY,
 		json TEXT NOT NULL
 	)`)
 	if err != nil {
-		hnsw.Free() // Clean up HNSW
-		db.Close()  // Clean up DB
+		hnsw.Free()
+		db.Close()
 		return nil, fmt.Errorf("failed to create metadata table: %w", err)
 	}
 
@@ -123,13 +128,17 @@ func New(config Config) (*Index, error) {
 		metadata:    make(map[uint64]map[string]interface{}),
 		db:          db,
 		batchBuffer: make([]vectorMeta, 0, config.BatchSize),
-		batchTicker: time.NewTicker(100 * time.Millisecond), // Configurable flush interval
+		batchTicker: time.NewTicker(100 * time.Millisecond), // configurable flush interval
 		batchDone:   make(chan struct{}),
+		logger:      logger,
 	}
 
-	// Start background batch processor
+	// Start background batch processor.
 	go idx.batchProcessor()
 
+	logger.Info("Quiver index initialized",
+		zap.Int("dimension", config.Dimension),
+		zap.Int("batchSize", config.BatchSize))
 	return idx, nil
 }
 
@@ -138,8 +147,11 @@ func (idx *Index) batchProcessor() {
 	for {
 		select {
 		case <-idx.batchTicker.C:
-			idx.flushBatch()
+			if err := idx.flushBatch(); err != nil {
+				idx.logger.Error("failed to flush batch", zap.Error(err))
+			}
 		case <-idx.batchDone:
+			idx.logger.Info("batch processor shutting down")
 			return
 		}
 	}
@@ -158,48 +170,53 @@ func (idx *Index) flushBatch() error {
 	vectors := make([][]float32, n)
 	ids := make([]uint64, n)
 
-	// Begin a transaction for batch insertion.
 	tx, err := idx.db.Begin()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	stmt, err := tx.Prepare(`INSERT INTO metadata (id, json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json`)
+	stmt, err := tx.Prepare(`INSERT INTO metadata (id, json) VALUES (?, ?)
+		ON CONFLICT(id) DO UPDATE SET json = excluded.json`)
 	if err != nil {
 		tx.Rollback()
-		return err
+		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer stmt.Close()
 
-	// Process each buffered vector.
 	for i, item := range idx.batchBuffer {
 		vectors[i] = item.vector
 		ids[i] = item.id
 		idx.metadata[item.id] = item.meta
 		idx.cache.Store(item.id, item.meta)
 
-		metaJSON, _ := json.Marshal(item.meta)
+		metaJSON, err := json.Marshal(item.meta)
+		if err != nil {
+			idx.logger.Error("failed to marshal metadata", zap.Uint64("id", item.id), zap.Error(err))
+			tx.Rollback()
+			return err
+		}
 		if _, err := stmt.Exec(item.id, string(metaJSON)); err != nil {
+			idx.logger.Error("failed to execute statement", zap.Uint64("id", item.id), zap.Error(err))
 			tx.Rollback()
 			return err
 		}
 	}
 
-	// Insert vectors in a single batch.
 	if err := idx.hnsw.AddPoints(vectors, ids, 1, true); err != nil {
 		tx.Rollback()
-		return err
+		return fmt.Errorf("failed to add points to HNSW: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return err
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// Clear the batch buffer.
+	idx.logger.Info("batch flushed", zap.Int("num_points", n))
 	idx.batchBuffer = idx.batchBuffer[:0]
 	return nil
 }
 
-// Add inserts a vector with metadata. It batches insertions to improve throughput.
+// Add inserts a vector with its metadata into the index.
+// Vectors are batched before being inserted to improve throughput.
 func (idx *Index) Add(id uint64, vector []float32, meta map[string]interface{}) error {
 	if len(vector) != idx.config.Dimension {
 		return errors.New("dimension mismatch")
@@ -210,86 +227,69 @@ func (idx *Index) Add(id uint64, vector []float32, meta map[string]interface{}) 
 	currentBatchSize := len(idx.batchBuffer)
 	idx.batchLock.Unlock()
 
-	// When the batch size threshold is reached, flush asynchronously.
 	if currentBatchSize >= idx.config.BatchSize {
 		go func() {
 			idx.lock.Lock()
 			defer idx.lock.Unlock()
 			if err := idx.flushBatch(); err != nil {
-				fmt.Printf("Batch flush error: %v\n", err)
+				idx.logger.Error("async batch flush error", zap.Error(err))
 			}
 		}()
 	}
 	return nil
 }
 
-// Search finds the nearest neighbors using HNSW.
+// Search performs an approximate nearest neighbor search using the HNSW index.
 func (idx *Index) Search(query []float32, k int) ([]SearchResult, error) {
 	idx.lock.RLock()
 	defer idx.lock.RUnlock()
 
 	results, err := idx.hnsw.SearchKNN([][]float32{query}, k, idx.config.HNSWEfSearch)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to perform search: %w", err)
 	}
 
 	var searchResults []SearchResult
 	for _, r := range results[0] {
-		// Retrieve metadata from in-memory map or cache.
-		meta, ok := idx.metadata[r.Label]
-		if !ok {
-			if cached, found := idx.cache.Load(r.Label); found {
-				meta = cached.(map[string]interface{})
-			}
-		}
+		meta := idx.getMetadata(r.Label)
 		searchResults = append(searchResults, SearchResult{
 			ID:       r.Label,
 			Distance: r.Distance,
 			Metadata: meta,
 		})
 	}
-
 	return searchResults, nil
 }
 
-// SearchWithFilter performs a hybrid search: first vector search then metadata filtering via DuckDB.
+// SearchWithFilter performs a hybrid search: first using vector search then filtering via DuckDB metadata.
 func (idx *Index) SearchWithFilter(query []float32, k int, filter string) ([]SearchResult, error) {
-	// First try metadata filtering
 	sqlQuery := `
 		SELECT id 
 		FROM metadata 
 		WHERE JSON_EXTRACT_STRING(json, '$.category') = ?
 		LIMIT ?`
-
-	rows, err := idx.db.Query(sqlQuery, filter, k*10) // Get more candidates for better results
+	rows, err := idx.db.Query(sqlQuery, filter, k*10)
 	if err != nil {
-		return nil, fmt.Errorf("metadata filter failed: %w", err)
+		return nil, fmt.Errorf("metadata filter query failed: %w", err)
 	}
 	defer rows.Close()
 
-	// Collect filtered IDs
 	var filteredIDs []uint64
 	for rows.Next() {
 		var id uint64
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 		filteredIDs = append(filteredIDs, id)
 	}
 
-	// If metadata filter is selective enough, search only those vectors
+	// If the metadata filter is selective, perform a targeted vector search.
 	if len(filteredIDs) < k*10 {
-		// Get vectors for filtered IDs
-		vectors := make([][]float32, 1)
-		vectors[0] = query // Put query vector first
-
-		// Search among filtered vectors
-		results, err := idx.hnsw.SearchKNN(vectors, k, idx.config.HNSWEfSearch)
+		results, err := idx.hnsw.SearchKNN([][]float32{query}, k, idx.config.HNSWEfSearch)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to search in HNSW: %w", err)
 		}
 
-		// Filter results by ID
 		var filteredResults []SearchResult
 		for _, r := range results[0] {
 			for _, id := range filteredIDs {
@@ -309,13 +309,12 @@ func (idx *Index) SearchWithFilter(query []float32, k int, filter string) ([]Sea
 		return filteredResults, nil
 	}
 
-	// If too many matches, do vector search first then filter
+	// Otherwise, perform a full vector search and filter the results by metadata.
 	results, err := idx.Search(query, k*2)
 	if err != nil {
 		return nil, err
 	}
 
-	// Filter results by metadata
 	var filteredResults []SearchResult
 	for _, res := range results {
 		meta := idx.getMetadata(res.ID)
@@ -328,18 +327,15 @@ func (idx *Index) SearchWithFilter(query []float32, k int, filter string) ([]Sea
 			}
 		}
 	}
-
 	return filteredResults, nil
 }
 
-// Helper method to get metadata
+// getMetadata retrieves metadata from the in-memory maps.
 func (idx *Index) getMetadata(id uint64) map[string]interface{} {
-	// Try in-memory cache first
 	if meta, ok := idx.metadata[id]; ok {
 		return meta
 	}
-	// Try sync.Map cache
-	if cached, found := idx.cache.Load(id); found {
+	if cached, ok := idx.cache.Load(id); ok {
 		return cached.(map[string]interface{})
 	}
 	return nil
@@ -347,57 +343,70 @@ func (idx *Index) getMetadata(id uint64) map[string]interface{} {
 
 // Save persists the HNSW index and metadata to disk.
 func (idx *Index) Save(path string) error {
-	// Flush any pending batch insertions.
 	idx.lock.Lock()
-	idx.flushBatch()
-	idx.lock.Unlock()
+	defer idx.lock.Unlock()
+
+	if err := idx.flushBatch(); err != nil {
+		idx.logger.Error("failed to flush batch before save", zap.Error(err))
+		return err
+	}
 
 	idx.hnsw.Save(path + "/index.hnsw")
 
 	metaFile, err := os.Create(path + "/metadata.json")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create metadata file: %w", err)
 	}
 	defer metaFile.Close()
-	return json.NewEncoder(metaFile).Encode(idx.metadata)
+
+	if err := json.NewEncoder(metaFile).Encode(idx.metadata); err != nil {
+		return fmt.Errorf("failed to encode metadata: %w", err)
+	}
+	idx.logger.Info("index saved successfully", zap.String("path", path))
+	return nil
 }
 
 // Load restores an index from disk.
-func Load(path string) (*Index, error) {
+func Load(path string, logger *zap.Logger) (*Index, error) {
 	hnsw, err := hnswgo.Load(path+"/index.hnsw", hnswgo.Cosine, 128, 100000, true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load HNSW index: %w", err)
 	}
 
 	metaFile, err := os.Open(path + "/metadata.json")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open metadata file: %w", err)
 	}
 	defer metaFile.Close()
 
 	var metadata map[uint64]map[string]interface{}
 	if err := json.NewDecoder(metaFile).Decode(&metadata); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode metadata: %w", err)
 	}
 
-	return &Index{
+	idx := &Index{
 		hnsw:     hnsw,
 		metadata: metadata,
-		// Note: The DuckDB connection should be re-established by the caller if needed.
-	}, nil
+		logger:   logger,
+	}
+	logger.Info("index loaded successfully", zap.String("path", path))
+	return idx, nil
 }
 
 // Close releases resources associated with the index.
 func (idx *Index) Close() error {
-	// Stop batch processor
 	idx.batchTicker.Stop()
 	close(idx.batchDone)
 
-	// Flush any remaining vectors
-	idx.flushBatch()
-
+	if err := idx.flushBatch(); err != nil {
+		idx.logger.Error("failed to flush batch during close", zap.Error(err))
+	}
 	idx.hnsw.Free()
-	return idx.db.Close()
+	if err := idx.db.Close(); err != nil {
+		return fmt.Errorf("failed to close database: %w", err)
+	}
+	idx.logger.Info("index closed successfully")
+	return nil
 }
 
 // SearchResult holds the output of a search.
@@ -421,12 +430,10 @@ func NewVectorSchema(dimension int) *arrow.Schema {
 
 // AppendFromArrow appends vectors and metadata from an Arrow record to the index.
 func (idx *Index) AppendFromArrow(rec arrow.Record) error {
-	// Check that the record has at least 3 columns.
 	if rec.NumCols() < 3 {
 		return errors.New("arrow record must have at least 3 columns: id, vector, metadata")
 	}
 
-	// Extract the columns.
 	idCol, ok := rec.Column(0).(*array.Uint64)
 	if !ok {
 		return errors.New("expected column 0 (id) to be an Uint64 array")
@@ -440,25 +447,24 @@ func (idx *Index) AppendFromArrow(rec arrow.Record) error {
 		return errors.New("expected column 2 (metadata) to be a String array")
 	}
 
-	// Get the fixed size (dimension) from the vector column’s type.
-	fsType := vectorCol.DataType().(*arrow.FixedSizeListType)
+	fsType, ok := vectorCol.DataType().(*arrow.FixedSizeListType)
+	if !ok {
+		return errors.New("failed to get FixedSizeList type from vector column")
+	}
 	dim := int(fsType.Len())
 
-	// The actual float32 values are stored in the underlying values array.
 	valuesArr, ok := vectorCol.ListValues().(*array.Float32)
 	if !ok {
-		return errors.New("expected the underlying vector array to be of type Float32")
+		return errors.New("expected underlying vector array to be of type Float32")
 	}
 
 	numRows := int(rec.NumRows())
 	for i := 0; i < numRows; i++ {
-		// Get the id value.
 		if idCol.IsNull(i) {
 			return fmt.Errorf("id column contains null value at row %d", i)
 		}
 		id := idCol.Value(i)
 
-		// For each row, extract the vector values.
 		vector := make([]float32, dim)
 		if vectorCol.IsNull(i) {
 			return fmt.Errorf("vector column contains null value at row %d", i)
@@ -468,17 +474,15 @@ func (idx *Index) AppendFromArrow(rec arrow.Record) error {
 			vector[j] = valuesArr.Value(start + j)
 		}
 
-		// Get metadata (as a JSON string) and unmarshal into a map.
 		meta := make(map[string]interface{})
 		if !metadataCol.IsNull(i) {
 			metaJSON := metadataCol.Value(i)
 			if err := json.Unmarshal([]byte(metaJSON), &meta); err != nil {
-				// Fallback: if unmarshaling fails, store the raw JSON string.
+				idx.logger.Warn("failed to unmarshal metadata, storing raw JSON", zap.Uint64("id", id), zap.Error(err))
 				meta = map[string]interface{}{"metadata": metaJSON}
 			}
 		}
 
-		// Append the row to the index using the existing Add method.
 		if err := idx.Add(id, vector, meta); err != nil {
 			return fmt.Errorf("failed to add vector with id %d: %w", id, err)
 		}
