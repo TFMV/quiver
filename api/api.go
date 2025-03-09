@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/TFMV/quiver"
-	"github.com/TFMV/quiver/version"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/basicauth"
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/monitor"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	jwt "github.com/gofiber/jwt/v2"
 	"go.uber.org/zap"
 )
 
@@ -66,7 +67,6 @@ func NewServer(opts ServerOptions, index *quiver.Index, logger *zap.Logger) *Ser
 
 	// Routes
 	app.Get("/health", healthCheckHandler(log))
-	app.Get("/version", versionHandler(log))
 	app.Get("/liveness", livenessHandler)
 	app.Get("/readiness", readinessHandler)
 
@@ -77,6 +77,18 @@ func NewServer(opts ServerOptions, index *quiver.Index, logger *zap.Logger) *Ser
 	// Add search endpoints
 	app.Post("/search", searchHandler(index, log))
 	app.Post("/search/hybrid", hybridSearchHandler(index, log))
+
+	// Add basic authentication middleware
+	app.Use(basicauth.New(basicauth.Config{
+		Users: map[string]string{
+			"admin": "password", // Replace with secure credentials
+		},
+	}))
+
+	// Add JWT authentication middleware
+	app.Use(jwt.New(jwt.Config{
+		SigningKey: []byte("secret"), // Replace with a secure key
+	}))
 
 	return &Server{app: app, log: log, port: opts.Port, index: index}
 }
@@ -116,19 +128,6 @@ func healthCheckHandler(log *zap.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		log.Debug("Health check requested")
 		return c.SendString("OK")
-	}
-}
-
-// versionHandler provides API version information
-func versionHandler(log *zap.Logger) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		log.Debug("Version endpoint hit")
-		return c.JSON(fiber.Map{
-			"service": "Parity API",
-			"version": version.Version,
-			"build":   version.BuildDate,
-			"time":    time.Now().UTC().Format(time.RFC3339),
-		})
 	}
 }
 
@@ -256,7 +255,11 @@ func searchHandler(idx *quiver.Index, log *zap.Logger) fiber.Handler {
 			req.K = 10 // Default to 10 results
 		}
 
-		results, err := idx.Search(req.Vector, req.K)
+		// Default to first page with 10 results per page
+		page := 1
+		pageSize := req.K
+
+		results, err := idx.Search(req.Vector, req.K, page, pageSize)
 		if err != nil {
 			log.Error("Search failed", zap.Error(err))
 			return fiber.NewError(fiber.StatusInternalServerError, "Search failed")
@@ -293,4 +296,21 @@ func hybridSearchHandler(idx *quiver.Index, log *zap.Logger) fiber.Handler {
 
 		return c.JSON(SearchResponse{Results: results})
 	}
+}
+
+// StartTLS starts the server with TLS enabled.
+func (s *Server) StartTLS(certFile, keyFile string) error {
+	// Verify that the certificate files exist and are valid
+	if _, err := os.Stat(certFile); err != nil {
+		return fmt.Errorf("certificate file not found: %w", err)
+	}
+	if _, err := os.Stat(keyFile); err != nil {
+		return fmt.Errorf("key file not found: %w", err)
+	}
+
+	// Note: Fiber doesn't support passing a TLS config directly
+	// We recommend using TLS 1.2 or higher for security
+
+	// Start server with TLS
+	return s.app.ListenTLS(":"+s.port, certFile, keyFile)
 }
