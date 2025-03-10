@@ -1,32 +1,47 @@
 # Quiver
 
-## High-Performance Vector Database for Go
-
 Quiver is a blazing-fast, embeddable vector database built in Go. It provides efficient similarity search for high-dimensional vectors with support for metadata filtering and seamless integration with Apache Arrow.
 
-[![Go](https://github.com/TFMV/quiver/actions/workflows/go.yml/badge.svg)](https://github.com/TFMV/quiver/actions/workflows/go.yml)
+[![Build](https://github.com/TFMV/quiver/actions/workflows/go.yml/badge.svg)](https://github.com/TFMV/quiver/actions/workflows/go.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/quiver)](https://goreportcard.com/report/github.com/TFMV/quiver)
 [![GoDoc](https://pkg.go.dev/badge/github.com/TFMV/quiver)](https://pkg.go.dev/github.com/TFMV/quiver)
 [![Release](https://img.shields.io/github/v/release/TFMV/quiver)](https://github.com/TFMV/quiver/releases)
 [![Go 1.24](https://img.shields.io/badge/Go-1.24-blue)](https://golang.org/doc/go1.24)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 🚀 Key Features
+## Key Features
 
-- **High-Performance Vector Search**: Powered by HNSW algorithm for approximate nearest neighbor search
-- **Rich Metadata Support**: DuckDB integration for structured data and advanced filtering
-- **Optimized for Production**:
+Quiver offers a comprehensive set of features designed for production environments:
+
+- **High-Performance Vector Search**
+  - HNSW algorithm for efficient approximate nearest neighbor search
+  - Multiple distance metrics (Cosine, L2)
+  - Optimized with SIMD acceleration
+
+- **Rich Metadata Support**
+  - DuckDB integration for structured data
+  - SQL-based filtering and faceted search
+  - Schema validation for metadata consistency
+
+- **Advanced Search Capabilities**
+  - Hybrid search combining vector similarity with metadata filtering
+  - Negative examples to avoid specific regions in vector space
+  - Multi-vector search for complex queries
+
+- **Enterprise-Ready**
+  - Automatic backup and restore with rotation
+  - Data encryption at rest with AES-GCM
+  - Comprehensive monitoring and metrics
+
+- **Performance Optimizations**
   - Batched operations for improved throughput
   - Background persistence to avoid blocking operations
-  - Automatic recovery mechanisms
-- **Enterprise-Ready**:
-  - Backup and restore capabilities
-  - Data encryption at rest
-  - Comprehensive monitoring
+  - Dimensionality reduction for storage and performance efficiency
+  - Semantic routing for distributed deployments
 
-## 🏗 Architecture
+## Architecture
 
-Quiver combines HNSW for efficient vector indexing with DuckDB for metadata storage:
+Quiver combines several powerful components to deliver high-performance vector search:
 
 ```mermaid
 flowchart TB
@@ -74,7 +89,9 @@ flowchart TB
     class DR,SR,DRA,SRA new
 ```
 
-## 📦 Quick Start
+## Quick Start
+
+Getting started with Quiver is straightforward:
 
 ```go
 package main
@@ -135,53 +152,163 @@ func main() {
 }
 ```
 
-## 🌟 Advanced Features
+## Data Flow
 
-### Vector Operations
+### Adding Vectors
 
-- **Multiple Distance Metrics**: L2 (Euclidean) and Cosine similarity
-- **Negative Examples**: Avoid specific regions in vector space
-- **Multi-Vector Search**: Query with multiple vectors simultaneously
-- **Pagination**: Efficiently handle large result sets
+When adding vectors to Quiver, the data flows through several components:
 
-### Data Management
+```mermaid
+flowchart TB
+    Start["Client Request"] -->|"Add Vector"| API["HTTP API"]
+    API -->|"Process Request"| Validation["Validate Input"]
+    Validation -->|"Valid"| Reduction["Dimensionality Reduction"]
+    Reduction -->|"Reduced Vector"| Batch["Batch Processing"]
+    Batch -->|"Process Batch"| HNSW["HNSW Graph Insertion"]
+    Batch -->|"Store Metadata"| DuckDB["DuckDB Storage"]
+    HNSW -->|"Update Index"| Persist["Persistence"]
+    DuckDB -->|"Update Metadata"| Persist
+    Persist -->|"Scheduled"| Backup["Backup"]
+    Persist -->|"Complete"| Response["Response to Client"]
+    
+    classDef primary fill:#7E57C2,stroke:#4527A0,color:white
+    classDef secondary fill:#FFA000,stroke:#FF6F00,color:white
+    classDef tertiary fill:#26A69A,stroke:#00897B,color:white
+    classDef new fill:#E57373,stroke:#C62828,color:white
+    
+    class Start,API,Response tertiary
+    class Validation,Batch,Persist secondary
+    class HNSW,DuckDB,Backup primary
+    class Reduction new
+```
 
-- **Incremental Persistence**: Minimize I/O with smart persistence
-- **Scheduled Backups**: Automatic backup with configurable intervals
-- **Compressed Backups**: Save storage space with optional compression
-- **Backup Rotation**: Automatically manage backup retention
+### Searching Vectors
 
-### Security
+The search process involves multiple steps to ensure efficient and accurate results:
 
-- **Encryption**: AES-GCM encryption for data at rest
-- **TLS Support**: Secure API endpoints
+```mermaid
+flowchart TB
+    Start["Client Request"] -->|"Search Query"| API["HTTP API"]
+    API -->|"Process Request"| Validation["Validate Input"]
+    Validation -->|"Valid"| Reduction["Dimensionality Reduction"]
+    Reduction -->|"Reduced Vector"| Router["Semantic Router"]
+    Router -->|"Route Query"| HNSW["HNSW Graph Search"]
+    HNSW -->|"Vector IDs"| Rerank["Result Reranking"]
+    Rerank -->|"Ranked IDs"| Metadata["Fetch Metadata"]
+    Metadata -->|"Enrich Results"| Response["Response to Client"]
+    
+    subgraph Filtering["Metadata Filtering"]
+        Filter["Apply Filters"]
+        Facet["Calculate Facets"]
+    end
+    
+    Metadata -->|"Optional"| Filtering
+    Filtering -->|"Filtered Results"| Response
+    
+    classDef primary fill:#7E57C2,stroke:#4527A0,color:white
+    classDef secondary fill:#FFA000,stroke:#FF6F00,color:white
+    classDef tertiary fill:#26A69A,stroke:#00897B,color:white
+    classDef new fill:#E57373,stroke:#C62828,color:white
+    
+    class Start,API,Response tertiary
+    class Validation,Rerank,Metadata secondary
+    class HNSW,Filtering primary
+    class Reduction,Router new
+```
 
-### Metadata & Filtering
+## Advanced Features
 
-- **Rich Queries**: Full SQL support via DuckDB integration
-- **Faceted Search**: Filter by metadata attributes
-- **Schema Validation**: Ensure metadata consistency
+### Hybrid Search
 
-## 🚀 Performance
+Quiver's hybrid search combines vector similarity with metadata filtering:
 
-Benchmarks on M2 Pro CPU:
+```mermaid
+flowchart TB
+    subgraph Input["Search Input"]
+        Query["Query Vector"]
+        Filter["Metadata Filter"]
+    end
+    
+    subgraph VectorSearch["Vector Search"]
+        HNSW["HNSW Graph"]
+        Distance["Distance Calculation"]
+        TopK["Top-K Selection"]
+    end
+    
+    subgraph MetadataSearch["Metadata Search"]
+        SQL["SQL Query"]
+        DuckDB["DuckDB Engine"]
+        Filtering["Filter Application"]
+    end
+    
+    Query -->|"Search"| VectorSearch
+    Filter -->|"Filter"| MetadataSearch
+    
+    VectorSearch -->|"Vector IDs"| Intersection["Result Intersection"]
+    MetadataSearch -->|"Matching IDs"| Intersection
+    
+    Intersection -->|"Final Results"| Ranking["Result Ranking"]
+    Ranking -->|"Sorted Results"| Output["Search Results"]
+    
+    classDef primary fill:#7E57C2,stroke:#4527A0,color:white
+    classDef secondary fill:#FFA000,stroke:#FF6F00,color:white
+    classDef tertiary fill:#26A69A,stroke:#00897B,color:white
+    
+    class Input,Query,Filter tertiary
+    class VectorSearch,HNSW,Distance,TopK primary
+    class MetadataSearch,SQL,DuckDB,Filtering secondary
+    class Intersection,Ranking,Output tertiary
+```
 
-| Operation | Throughput | Latency | Memory/Op | Allocs/Op |
-|-----------|------------|---------|-----------|-----------|
-| Add | 6.4K ops/sec | 156µs | 20.9 KB | 370 |
-| Search | 16.9K ops/sec | 59µs | 24.2 KB | 439 |
-| Hybrid Search | 4.8K ops/sec | 208µs | 80.6 KB | 822 |
-| Search with Negatives | 7.9K ops/sec | 126µs | 32.5 KB | 491 |
-| Batch Add (1000) | 6.6 ops/sec | 152ms | 19.0 MB | 331K |
+---
 
-Key observations:
+```go
+// Search for similar vectors with metadata constraints
+results, err := idx.SearchWithFilter(
+    queryVector,
+    10,  // number of results
+    "SELECT * FROM metadata WHERE json->>'category' = 'electronics' AND json->>'price'::float < 1000"
+)
+```
 
-- Super-fast vector search at ~59µs per query
-- Hybrid search adds minimal overhead for metadata filtering
-- Efficient memory usage with configurable parameters
-- Batch operations provide high throughput for bulk loading
+### Dimensionality Reduction
 
-## 🌐 API Server
+Reduce storage requirements and improve performance with dimensionality reduction:
+
+```go
+config := quiver.Config{
+    Dimension: 768,
+    // Enable dimensionality reduction
+    EnableDimReduction: true,
+    DimReductionMethod: "PCA",
+    DimReductionTarget: 128,
+    // Optional: adaptive dimensionality reduction
+    DimReductionAdaptive: true,
+    DimReductionMinVariance: 0.95,
+}
+```
+
+### Backup and Restore
+
+Ensure data safety with automatic backups:
+
+```go
+// Configure automatic backups
+config := quiver.Config{
+    BackupInterval: 1 * time.Hour,
+    BackupPath: "./backups",
+    BackupCompression: true,
+    MaxBackups: 5,
+}
+
+// Manual backup
+err := idx.Backup("/path/to/backup", false, true)  // path, incremental, compress
+
+// Restore from backup
+err := idx.Restore("/path/to/backup")
+```
+
+## API Server
 
 Quiver includes a ready-to-use HTTP API server:
 
@@ -226,12 +353,35 @@ func main() {
 }
 ```
 
-## 📚 Installation
+## Performance
+
+Quiver is designed for high performance. Here are benchmark results on an M2 Pro CPU:
+
+| Operation | Throughput | Latency | Memory/Op | Allocs/Op |
+|-----------|------------|---------|-----------|-----------|
+| Add | 6.4K ops/sec | 156µs | 20.9 KB | 370 |
+| Search | 16.9K ops/sec | 59µs | 24.2 KB | 439 |
+| Hybrid Search | 4.8K ops/sec | 208µs | 80.6 KB | 822 |
+| Search with Negatives | 7.9K ops/sec | 126µs | 32.5 KB | 491 |
+| Batch Add (1000) | 6.6 ops/sec | 152ms | 19.0 MB | 331K |
+
+Key observations:
+
+- Super-fast vector search at ~59µs per query
+- Hybrid search adds minimal overhead for metadata filtering
+- Efficient memory usage with configurable parameters
+- Batch operations provide high throughput for bulk loading
+
+## Installation
 
 ```bash
 go get github.com/TFMV/quiver
 ```
 
-## 📄 License
+## Documentation
+
+For comprehensive documentation, visit our [Documentation Site](https://tfmv.github.io/quiver/).
+
+## License
 
 [MIT License](LICENSE)
