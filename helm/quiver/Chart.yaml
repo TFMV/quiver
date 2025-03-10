@@ -1,0 +1,17 @@
+apiVersion: v2
+name: quiver
+description: A Helm chart for Quiver vector database
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - vector
+  - database
+  - embeddings
+  - search
+home: https://github.com/TFMV/quiver
+sources:
+  - https://github.com/TFMV/quiver
+maintainers:
+  - name: TFMV
+    url: https://github.com/TFMV
