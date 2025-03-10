@@ -255,35 +255,76 @@ body {
     font-weight: bold;
   }
   
-  /* Improve tap targets for mobile */
   .md-nav__link {
-    padding: 0.6rem 0.8rem;
-    margin: 0.2rem 0;
-    border-radius: 4px;
-    transition: background-color 0.2s ease;
+    margin-top: 0.5em;
+    padding: 0.6em 0.8em;
+    border-radius: 0.2em;
+    transition: all 0.2s;
   }
   
   .md-nav__link:hover {
-    background-color: var(--quiver-background-dark);
+    background-color: rgba(103, 58, 183, 0.1);
   }
   
-  /* Make the navigation drawer wider on mobile */
   .md-sidebar--primary {
-    width: 16rem;
+    width: 100%;
+    max-width: 100%;
   }
   
-  /* Improve section headers in mobile nav */
   .md-nav__title {
+    font-size: 1.2rem;
     padding: 1rem;
-    font-weight: bold;
-    border-bottom: 1px solid var(--quiver-border);
+    font-weight: 700;
   }
   
-  /* Add visual separation between nav items */
   .md-nav__list .md-nav__list {
     padding-left: 0.8rem;
-    border-left: 2px solid var(--quiver-primary-light);
-    margin-left: 0.8rem;
+  }
+  
+  /* Fix for navigation covering content on mobile */
+  .md-sidebar {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+  }
+  
+  .md-sidebar--primary:not([hidden]) {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+    transform: none;
+    height: auto;
+    background-color: transparent;
+  }
+  
+  .md-content {
+    margin-left: 0;
+    width: 100%;
+  }
+  
+  .md-main__inner {
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .md-sidebar--primary {
+    order: 2;
+  }
+  
+  .md-content {
+    order: 1;
+  }
+  
+  /* Improve navigation toggle */
+  .md-header__button.md-icon {
+    margin: 0.4rem;
+  }
+  
+  .md-nav--primary .md-nav__toggle:checked ~ .md-nav__list {
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+    margin-top: 0.5rem;
+    margin-bottom: 1rem;
+    border-radius: 4px;
   }
 }
 
@@ -399,4 +440,34 @@ body {
 
 .md-header__button.md-logo:hover img {
   transform: scale(1.1);
+}
+
+/* Mermaid diagram styling */
+.mermaid {
+  overflow-x: auto;
+  max-width: 100%;
+  text-align: center;
+  margin: 1rem auto;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  height: auto !important;
+}
+
+@media screen and (max-width: 76.1875em) {
+  .mermaid {
+    font-size: 0.8rem;
+  }
+  
+  .mermaid .label {
+    font-size: 0.7rem;
+  }
+  
+  .mermaid .edgeLabel {
+    font-size: 0.7rem;
+    background-color: rgba(255, 255, 255, 0.7);
+    padding: 2px;
+    border-radius: 2px;
+  }
 } 
