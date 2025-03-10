@@ -3,10 +3,7 @@ package api
 import (
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
 var (
@@ -49,16 +46,6 @@ func init() {
 	prometheus.MustRegister(searchLatency)
 	prometheus.MustRegister(vectorCount)
 	prometheus.MustRegister(memoryUsage)
-}
-
-// metricsHandler returns a handler for the /metrics endpoint
-func metricsHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// Convert the Prometheus handler to a Fiber handler
-		handler := fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler())
-		handler(c.Context())
-		return nil
-	}
 }
 
 // ObserveSearchLatency records the latency of a search request
