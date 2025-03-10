@@ -2039,3 +2039,30 @@ func (idx *Index) AppendFromArrow(rec arrow.Record) error {
 	}
 	return nil
 }
+
+// DeleteVector deletes a vector from the index.
+func (idx *Index) DeleteVector(id uint64) error {
+	idx.lock.Lock()
+	defer idx.lock.Unlock()
+
+	if _, ok := idx.vectors[id]; !ok {
+		return fmt.Errorf("vector with id %d not found", id)
+	}
+
+	delete(idx.vectors, id)
+	return nil
+}
+
+// DeleteVectors deletes multiple vectors from the index.
+func (idx *Index) DeleteVectors(ids []uint64) error {
+	idx.lock.Lock()
+	defer idx.lock.Unlock()
+
+	for _, id := range ids {
+		if _, ok := idx.vectors[id]; !ok {
+			return fmt.Errorf("vector with id %d not found", id)
+		}
+		delete(idx.vectors, id)
+	}
+	return nil
+}
