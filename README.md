@@ -29,11 +29,49 @@ Quiver is a blazing-fast, embeddable vector database built in Go. It provides ef
 Quiver combines HNSW for efficient vector indexing with DuckDB for metadata storage:
 
 ```mermaid
-flowchart TD
-  A["Initialize Quiver"] --> B["HNSW Index"] & C["DuckDB Storage"]
-  B --> D["Vector Search"]
-  C --> E["Metadata Filtering"]
-  D & E --> F["Combined Results"]
+flowchart TB
+    subgraph QuiverIndex["Quiver Index"]
+        HNSW["HNSW Graph (Search)"]
+        VS["Vector Storage"]
+        MS["Metadata Store (DuckDB)"]
+        PB["Persistence Backup"]
+        DR["Dimensionality Reduction"]
+        SR["Semantic Routing"]
+    end
+    
+    subgraph APIs
+        VA["Vector API (Add, Search, etc.)"]
+        MA["Metadata API (Filters, Facets)"]
+        DRA["Dimension Reduction API"]
+        SRA["Semantic Routing API"]
+    end
+    
+    HTTP["HTTP API (REST, Authentication, etc.)"]
+    
+    VA -->|"uses"| HNSW
+    VA -->|"uses"| VS
+    VA -->|"uses"| DR
+    MA -->|"uses"| MS
+    DRA -->|"uses"| DR
+    SRA -->|"uses"| SR
+    
+    HTTP -->|"calls"| VA
+    HTTP -->|"calls"| MA
+    HTTP -->|"calls"| DRA
+    HTTP -->|"calls"| SRA
+    
+    DR -->|"processes"| VS
+    SR -->|"routes to"| HNSW
+    
+    classDef primary fill:#7E57C2,stroke:#4527A0,color:white
+    classDef secondary fill:#FFA000,stroke:#FF6F00,color:white
+    classDef tertiary fill:#26A69A,stroke:#00897B,color:white
+    classDef new fill:#E57373,stroke:#C62828,color:white
+    
+    class QuiverIndex,HNSW,VS,MS,PB primary
+    class VA,MA secondary
+    class HTTP tertiary
+    class DR,SR,DRA,SRA new
 ```
 
 ## 📦 Quick Start
