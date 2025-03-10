@@ -11,25 +11,53 @@ import (
 	"time"
 
 	"github.com/TFMV/quiver"
+	"github.com/TFMV/quiver/extensions"
+	"github.com/TFMV/quiver/router"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/monitor"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/valyala/fasthttp/fasthttpadaptor"
 	"go.uber.org/zap"
 )
 
 // Server holds the Fiber app instance
 type Server struct {
-	app   *fiber.App
-	log   *zap.Logger
-	port  string
-	index *quiver.Index
+	app     *fiber.App
+	log     *zap.Logger
+	port    string
+	index   *quiver.Index
+	manager *extensions.MultiIndexManager
 }
 
 // ServerOptions defines the configuration for the server.
 type ServerOptions struct {
 	Port    string
 	Prefork bool
+	// Extension options
+	EnableExtensions bool
+	RouterConfig     router.RouterConfig
+}
+
+// DimReductionOptions defines the configuration for dimensionality reduction
+type DimReductionOptions struct {
+	Enabled     bool    `json:"enabled"`
+	Method      string  `json:"method,omitempty"`
+	TargetDim   int     `json:"target_dim,omitempty"`
+	Adaptive    bool    `json:"adaptive,omitempty"`
+	MinVariance float64 `json:"min_variance,omitempty"`
+}
+
+// IndexOptions defines the configuration for creating a new index
+type IndexOptions struct {
+	Dimension       int                 `json:"dimension"`
+	Distance        string              `json:"distance"`
+	MaxElements     uint64              `json:"max_elements,omitempty"`
+	HNSWM           int                 `json:"hnsw_m,omitempty"`
+	HNSWEfConstruct int                 `json:"hnsw_ef_construct,omitempty"`
+	HNSWEfSearch    int                 `json:"hnsw_ef_search,omitempty"`
+	DimReduction    DimReductionOptions `json:"dim_reduction,omitempty"`
 }
 
 // SearchRequest represents a search request
@@ -56,11 +84,13 @@ func NewServer(opts ServerOptions, index *quiver.Index, logger *zap.Logger) *Ser
 	}
 
 	fiberConfig := fiber.Config{
-		IdleTimeout:  10 * time.Second,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		Prefork:      opts.Prefork,
-		ErrorHandler: customErrorHandler(logger),
+		IdleTimeout:   10 * time.Second,
+		ReadTimeout:   10 * time.Second,
+		WriteTimeout:  10 * time.Second,
+		Prefork:       opts.Prefork,
+		ErrorHandler:  customErrorHandler(logger),
+		CaseSensitive: true,
+		StrictRouting: true,
 	}
 
 	app := fiber.New(fiberConfig)
@@ -69,6 +99,29 @@ func NewServer(opts ServerOptions, index *quiver.Index, logger *zap.Logger) *Ser
 	app.Use(recover.New())  // Auto-recovers from panics
 	app.Use(compress.New()) // Enable gzip compression
 	// Note: We're not using Fiber's logger middleware as we have our own custom logger
+
+	// Create the server
+	server := &Server{
+		app:   app,
+		log:   logger,
+		port:  opts.Port,
+		index: index,
+	}
+
+	// Create the multi-index manager if extensions are enabled
+	if opts.EnableExtensions {
+		manager, err := extensions.NewMultiIndexManager(opts.RouterConfig, logger)
+		if err != nil {
+			logger.Error("Failed to create multi-index manager", zap.Error(err))
+		} else {
+			server.manager = manager
+			// Register the main index with the manager
+			err = manager.RegisterIndex(router.GeneralIndex, index, nil)
+			if err != nil {
+				logger.Error("Failed to register main index with manager", zap.Error(err))
+			}
+		}
+	}
 
 	// Routes
 	app.Get("/health", healthCheckHandler(logger))
@@ -98,15 +151,20 @@ func NewServer(opts ServerOptions, index *quiver.Index, logger *zap.Logger) *Ser
 	v1.Post("/index/backup", backupHandler(index, logger))
 	v1.Post("/index/restore", restoreHandler(index, logger))
 
+	// Add dimensionality reduction endpoint if enabled
+	if index.Config().EnableDimReduction {
+		v1.Post("/reduce", reduceVectorsHandler(index, logger))
+	}
+
+	// Register extension routes if enabled
+	if opts.EnableExtensions && server.manager != nil {
+		logger.Warn("Extension routes registration is disabled")
+	}
+
 	// Add custom logging middleware
 	app.Use(customLoggingMiddleware(logger))
 
-	return &Server{
-		app:   app,
-		log:   logger,
-		port:  opts.Port,
-		index: index,
-	}
+	return server
 }
 
 // customErrorHandler provides structured error handling
@@ -668,5 +726,141 @@ func restoreHandler(idx *quiver.Index, log *zap.Logger) fiber.Handler {
 			"success": true,
 			"message": "Restore completed successfully",
 		})
+	}
+}
+
+// createIndexHandler creates a new index
+func createIndexHandler(logger *zap.Logger) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var opts IndexOptions
+		if err := c.BodyParser(&opts); err != nil {
+			logger.Error("Failed to parse index options", zap.Error(err))
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error":   true,
+				"message": "Invalid request format",
+			})
+		}
+
+		// Validate options
+		if opts.Dimension <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error":   true,
+				"message": "Dimension must be positive",
+			})
+		}
+
+		// Create the index configuration
+		config := quiver.Config{
+			Dimension:       opts.Dimension,
+			Distance:        quiver.CosineDistance, // Default
+			MaxElements:     opts.MaxElements,
+			HNSWM:           opts.HNSWM,
+			HNSWEfConstruct: opts.HNSWEfConstruct,
+			HNSWEfSearch:    opts.HNSWEfSearch,
+		}
+
+		// Set the distance metric
+		if opts.Distance == "l2" {
+			config.Distance = quiver.L2Distance
+		}
+
+		// Set default values if not provided
+		if config.MaxElements == 0 {
+			config.MaxElements = 1000000
+		}
+		if config.HNSWM == 0 {
+			config.HNSWM = 16
+		}
+		if config.HNSWEfConstruct == 0 {
+			config.HNSWEfConstruct = 200
+		}
+		if config.HNSWEfSearch == 0 {
+			config.HNSWEfSearch = 100
+		}
+
+		// Configure dimensionality reduction if enabled
+		if opts.DimReduction.Enabled {
+			config.EnableDimReduction = true
+			config.DimReductionMethod = opts.DimReduction.Method
+			config.DimReductionTarget = opts.DimReduction.TargetDim
+			config.DimReductionAdaptive = opts.DimReduction.Adaptive
+			config.DimReductionMinVariance = opts.DimReduction.MinVariance
+
+			// Set default values if not provided
+			if config.DimReductionMethod == "" {
+				config.DimReductionMethod = "PCA"
+			}
+			if config.DimReductionTarget <= 0 {
+				config.DimReductionTarget = config.Dimension / 2
+			}
+			if config.DimReductionMinVariance <= 0 {
+				config.DimReductionMinVariance = 0.95
+			}
+		}
+
+		// Create the index
+		_, err := quiver.New(config, logger)
+		if err != nil {
+			logger.Error("Failed to create index", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error":   true,
+				"message": "Failed to create index: " + err.Error(),
+			})
+		}
+
+		// Return the index configuration
+		return c.JSON(fiber.Map{
+			"success": true,
+			"message": "Index created successfully",
+			"config":  config,
+		})
+	}
+}
+
+// reduceVectorsHandler reduces the dimensionality of vectors
+func reduceVectorsHandler(idx *quiver.Index, logger *zap.Logger) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var req struct {
+			Vectors [][]float32 `json:"vectors"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			logger.Error("Failed to parse request", zap.Error(err))
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error":   true,
+				"message": "Invalid request format",
+			})
+		}
+
+		if len(req.Vectors) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error":   true,
+				"message": "No vectors provided",
+			})
+		}
+
+		// Reduce the vectors
+		reducedVectors, err := idx.ReduceVectors(req.Vectors)
+		if err != nil {
+			logger.Error("Failed to reduce vectors", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error":   true,
+				"message": "Failed to reduce vectors: " + err.Error(),
+			})
+		}
+
+		return c.JSON(fiber.Map{
+			"success": true,
+			"vectors": reducedVectors,
+		})
+	}
+}
+
+// metricsHandler returns a handler for Prometheus metrics
+func metricsHandler() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		// Convert the Prometheus handler to a Fiber handler
+		handler := fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler())
+		handler(c.Context())
+		return nil
 	}
 }

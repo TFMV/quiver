@@ -17,12 +17,14 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/TFMV/quiver/dimreduce" // Add this import
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr"
 	"github.com/apache/arrow-go/v18/arrow"
@@ -65,6 +67,12 @@ type Config struct {
 	// Security configuration
 	EncryptionEnabled bool   // Whether to encrypt data at rest
 	EncryptionKey     string // Key for encrypting data at rest (min 32 bytes)
+	// Dimensionality reduction configuration
+	EnableDimReduction      bool    // Whether to enable dimensionality reduction
+	DimReductionMethod      string  // Method to use for dimensionality reduction (e.g., "PCA")
+	DimReductionTarget      int     // Target dimension for reduction
+	DimReductionAdaptive    bool    // Whether to use adaptive dimensionality reduction
+	DimReductionMinVariance float64 // Minimum variance to explain (0.0-1.0) for adaptive reduction
 }
 
 // vectorMeta holds a vector and its metadata for batch insertion.
@@ -106,6 +114,8 @@ type Index struct {
 	lastBackupTime time.Time
 	// A waitgroup to ensure background workers exit on close.
 	bgWG sync.WaitGroup
+	// Dimensionality reduction fields
+	dimReducer interface{} // Will hold a dimreduce.DimReducer if enabled
 }
 
 // DuckDBOptions define the configuration for opening a DuckDB database.
@@ -414,6 +424,23 @@ func New(config Config, logger *zap.Logger) (*Index, error) {
 		return Load(config, logger)
 	}
 
+	// If dimensionality reduction is enabled, validate the configuration
+	if config.EnableDimReduction {
+		if config.DimReductionTarget <= 0 || config.DimReductionTarget >= config.Dimension {
+			return nil, fmt.Errorf("invalid target dimension for reduction: %d (must be > 0 and < %d)",
+				config.DimReductionTarget, config.Dimension)
+		}
+
+		if config.DimReductionMethod == "" {
+			config.DimReductionMethod = "PCA" // Default to PCA
+		}
+
+		if config.DimReductionAdaptive && (config.DimReductionMinVariance <= 0 || config.DimReductionMinVariance > 1.0) {
+			return nil, fmt.Errorf("invalid minimum variance for adaptive reduction: %f (must be > 0 and <= 1.0)",
+				config.DimReductionMinVariance)
+		}
+	}
+
 	// Initialize HNSW graph with the specified parameters
 	// Create a new HNSW graph with default configuration
 	graph := hnsw.NewGraph[uint64]()
@@ -458,6 +485,16 @@ func New(config Config, logger *zap.Logger) (*Index, error) {
 		persistDone:     make(chan struct{}),
 		backupTicker:    time.NewTicker(backupInterval),
 		backupDone:      make(chan struct{}),
+	}
+
+	// Initialize dimensionality reduction if enabled
+	if config.EnableDimReduction {
+		// We'll initialize the dimensionality reducer in a separate function
+		// to avoid import cycles
+		err := idx.initDimReducer()
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize dimensionality reducer: %w", err)
+		}
 	}
 
 	// Start background workers.
@@ -564,6 +601,17 @@ func (idx *Index) flushBatch() error {
 
 // Add adds a vector to the index with the specified ID and metadata.
 func (idx *Index) Add(id uint64, vector []float32, meta map[string]interface{}) error {
+	// If dimensionality reduction is enabled, reduce the vector
+	if idx.config.EnableDimReduction && idx.dimReducer != nil {
+		// We'll implement the actual reduction in a separate file
+		// to avoid import cycles with the dimreduce package
+		reducedVector, err := idx.reduceVector(vector)
+		if err != nil {
+			return fmt.Errorf("failed to reduce vector dimensions: %w", err)
+		}
+		vector = reducedVector
+	}
+
 	// Validate input
 	if len(vector) != idx.config.Dimension {
 		return fmt.Errorf("vector dimension (%d) does not match index dimension (%d)", len(vector), idx.config.Dimension)
@@ -599,6 +647,17 @@ func (idx *Index) Add(id uint64, vector []float32, meta map[string]interface{}) 
 // Search performs a vector similarity search and returns the k most similar vectors.
 // Supports pagination with page and pageSize parameters.
 func (idx *Index) Search(query []float32, k, page, pageSize int) ([]SearchResult, error) {
+	// If dimensionality reduction is enabled, reduce the query vector
+	if idx.config.EnableDimReduction && idx.dimReducer != nil {
+		// We'll implement the actual reduction in a separate file
+		// to avoid import cycles with the dimreduce package
+		reducedQuery, err := idx.reduceVector(query)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reduce query dimensions: %w", err)
+		}
+		query = reducedQuery
+	}
+
 	idx.lock.RLock()
 	defer idx.lock.RUnlock()
 
@@ -699,6 +758,15 @@ func (idx *Index) Search(query []float32, k, page, pageSize int) ([]SearchResult
 
 // SearchWithFilter performs a search and filters results based on a metadata query.
 func (idx *Index) SearchWithFilter(query []float32, k int, filter string) ([]SearchResult, error) {
+	// If dimensionality reduction is enabled, reduce the query vector
+	if idx.config.EnableDimReduction && idx.dimReducer != nil {
+		reducedQuery, err := idx.reduceVector(query)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reduce query dimensions: %w", err)
+		}
+		query = reducedQuery
+	}
+
 	// First, query metadata to get matching IDs
 	metadataResults, err := idx.QueryMetadata(filter)
 	if err != nil {
@@ -1531,6 +1599,15 @@ func (idx *Index) LogQuery(query string, duration time.Duration) {
 
 // FacetedSearch performs a search and filters results based on provided facet key/values.
 func (idx *Index) FacetedSearch(query []float32, k int, facets map[string]string) ([]SearchResult, error) {
+	// If dimensionality reduction is enabled, reduce the query vector
+	if idx.config.EnableDimReduction && idx.dimReducer != nil {
+		reducedQuery, err := idx.reduceVector(query)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reduce query dimensions: %w", err)
+		}
+		query = reducedQuery
+	}
+
 	results, err := idx.Search(query, k, 1, k)
 	if err != nil {
 		return nil, err
@@ -1554,6 +1631,15 @@ func (idx *Index) FacetedSearch(query []float32, k int, facets map[string]string
 
 // MultiVectorSearch performs searches for multiple query vectors.
 func (idx *Index) MultiVectorSearch(queries [][]float32, k int) ([][]SearchResult, error) {
+	// If dimensionality reduction is enabled, reduce the query vectors
+	if idx.config.EnableDimReduction && idx.dimReducer != nil {
+		reducedQueries, err := idx.ReduceVectors(queries)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reduce query dimensions: %w", err)
+		}
+		queries = reducedQueries
+	}
+
 	idx.lock.RLock()
 	defer idx.lock.RUnlock()
 
@@ -1667,6 +1753,21 @@ func (idx *Index) pruneOldBackups() {
 
 // SearchWithNegatives performs a search with positive and negative examples.
 func (idx *Index) SearchWithNegatives(positiveQuery []float32, negativeQueries [][]float32, k, page, pageSize int) ([]SearchResult, error) {
+	// If dimensionality reduction is enabled, reduce the query vectors
+	if idx.config.EnableDimReduction && idx.dimReducer != nil {
+		reducedPositiveQuery, err := idx.reduceVector(positiveQuery)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reduce positive query dimensions: %w", err)
+		}
+		positiveQuery = reducedPositiveQuery
+
+		reducedNegativeQueries, err := idx.ReduceVectors(negativeQueries)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reduce negative query dimensions: %w", err)
+		}
+		negativeQueries = reducedNegativeQueries
+	}
+
 	idx.lock.RLock()
 	defer idx.lock.RUnlock()
 
@@ -2065,4 +2166,76 @@ func (idx *Index) DeleteVectors(ids []uint64) error {
 		delete(idx.vectors, id)
 	}
 	return nil
+}
+
+// initDimReducer initializes the dimensionality reducer
+func (idx *Index) initDimReducer() error {
+	// Create the dimensionality reducer configuration
+	config := dimreduce.DimReducerConfig{
+		TargetDimension:      idx.config.DimReductionTarget,
+		Method:               dimreduce.ReductionMethod(idx.config.DimReductionMethod),
+		Adaptive:             idx.config.DimReductionAdaptive,
+		MinVarianceExplained: idx.config.DimReductionMinVariance,
+		Logger:               idx.logger,
+	}
+
+	// Create the dimensionality reducer
+	reducer, err := dimreduce.NewDimReducer(config)
+	if err != nil {
+		return fmt.Errorf("failed to create dimensionality reducer: %w", err)
+	}
+
+	// Store the reducer
+	idx.dimReducer = reducer
+	return nil
+}
+
+// reduceVector reduces the dimensionality of a vector
+func (idx *Index) reduceVector(vector []float32) ([]float32, error) {
+	// Get the dimensionality reducer
+	reducer, ok := idx.dimReducer.(*dimreduce.DimReducer)
+	if !ok {
+		return nil, fmt.Errorf("dimensionality reducer not initialized or has wrong type: %v",
+			reflect.TypeOf(idx.dimReducer))
+	}
+
+	// Reduce the vector
+	reducedVectors, err := reducer.Reduce([][]float32{vector})
+	if err != nil {
+		return nil, fmt.Errorf("failed to reduce vector dimensions: %w", err)
+	}
+
+	if len(reducedVectors) == 0 || len(reducedVectors[0]) == 0 {
+		return nil, fmt.Errorf("dimensionality reduction returned empty vector")
+	}
+
+	return reducedVectors[0], nil
+}
+
+// ReduceVectors reduces the dimensionality of multiple vectors
+// This is a public API for users to reduce vectors without adding them to the index
+func (idx *Index) ReduceVectors(vectors [][]float32) ([][]float32, error) {
+	if !idx.config.EnableDimReduction {
+		return nil, fmt.Errorf("dimensionality reduction not enabled in this index")
+	}
+
+	// Get the dimensionality reducer
+	reducer, ok := idx.dimReducer.(*dimreduce.DimReducer)
+	if !ok {
+		return nil, fmt.Errorf("dimensionality reducer not initialized or has wrong type: %v",
+			reflect.TypeOf(idx.dimReducer))
+	}
+
+	// Reduce the vectors
+	if idx.config.DimReductionAdaptive {
+		return reducer.AdaptiveReduce(vectors)
+	}
+	return reducer.Reduce(vectors)
+}
+
+// Config returns a copy of the index configuration
+func (idx *Index) Config() Config {
+	idx.lock.RLock()
+	defer idx.lock.RUnlock()
+	return idx.config
 }
