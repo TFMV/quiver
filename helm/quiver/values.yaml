@@ -1,0 +1,91 @@
+## Global settings
+nameOverride: ""
+fullnameOverride: ""
+
+## Image settings
+image:
+  repository: quiver
+  tag: latest
+  pullPolicy: IfNotPresent
+
+## Service settings
+service:
+  type: ClusterIP
+  port: 8080
+
+## Ingress settings
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: quiver.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+## Resources settings
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 2
+    memory: 4Gi
+
+## Autoscaling settings
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+## Persistence settings
+persistence:
+  enabled: true
+  storageClass: ""
+  size: 10Gi
+  accessMode: ReadWriteOnce
+
+## Quiver configuration
+config:
+  dimension: 1536
+  distance: "cosine"
+  maxElements: 1000000
+  hnsw:
+    m: 16
+    efConstruction: 200
+    efSearch: 100
+  batchSize: 100
+  persistence:
+    interval: "5m"
+    path: "/data/quiver"
+  backup:
+    interval: "1h"
+    path: "/data/backups"
+    compression: true
+    maxBackups: 5
+  security:
+    encryptionEnabled: false
+  logging:
+    level: "info"
+    format: "json"
+
+## Pod settings
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+## Prometheus metrics
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    scrapeTimeout: 10s
+    labels: {}

@@ -1,0 +1,96 @@
+name: Python Package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "quiver/python/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "quiver/python/**"
+
+# Skip this workflow
+jobs:
+  build-test-lint:
+    # Skip this workflow
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install flake8 pytest pytest-cov build twine
+          if [ -f quiver/python/requirements.txt ]; then pip install -r quiver/python/requirements.txt; fi
+          pip install -e quiver/python
+
+      - name: Lint with flake8
+        run: |
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 quiver/python --count --select=E9,F63,F7,F82 --show-source --statistics
+          # exit-zero treats all errors as warnings
+          flake8 quiver/python --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Test with pytest
+        run: |
+          pytest quiver/python/tests/ --cov=quiver.python --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+      - name: Build package
+        run: |
+          cd quiver/python
+          python -m build
+
+      - name: Check package
+        run: |
+          cd quiver/python
+          twine check dist/*
+
+  docs:
+    # This condition will always be false, effectively skipping this job
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mkdocs mkdocs-material
+          if [ -f quiver/python/docs/requirements.txt ]; then pip install -r quiver/python/docs/requirements.txt; fi
+
+      - name: Build documentation
+        run: |
+          cd quiver/python/quiver
+          mkdocs build --strict
+
+      # Only deploy docs on push to main
+      - name: Deploy documentation
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./quiver/python/quiver/site
