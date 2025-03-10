@@ -7,7 +7,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
-	"go.uber.org/zap"
 )
 
 var (
@@ -53,37 +52,12 @@ func init() {
 }
 
 // metricsHandler returns a handler for the /metrics endpoint
-func metricsHandler(log *zap.Logger) fiber.Handler {
+func metricsHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Convert the Prometheus handler to a Fiber handler
 		handler := fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler())
 		handler(c.Context())
 		return nil
-	}
-}
-
-// recordMetrics updates the metrics based on the index state
-func (s *Server) recordMetrics() {
-	// Update metrics periodically
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			// Get metrics from the index
-			metrics := s.index.CollectMetrics()
-
-			// Update vector count
-			if count, ok := metrics["vector_count"].(int); ok {
-				vectorCount.Set(float64(count))
-			}
-
-			// Update memory usage
-			if memory, ok := metrics["memory_usage"].(uint64); ok {
-				memoryUsage.Set(float64(memory))
-			}
-		}
 	}
 }
 
