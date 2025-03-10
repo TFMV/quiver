@@ -12,11 +12,9 @@ import (
 
 	"github.com/TFMV/quiver"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/basicauth"
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/monitor"
 	"github.com/gofiber/fiber/v2/middleware/recover"
-	jwt "github.com/gofiber/jwt/v2"
 	"go.uber.org/zap"
 )
 
@@ -48,49 +46,56 @@ type SearchResponse struct {
 
 // NewServer initializes a new Fiber instance with best practices
 func NewServer(opts ServerOptions, index *quiver.Index, logger *zap.Logger) *Server {
-	// Initialize Zap logger
-	log, _ := zap.NewProduction()
-
-	fiberConfig := fiber.Config{
-		IdleTimeout:  10 * time.Second,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		Prefork:      opts.Prefork,
-		ErrorHandler: customErrorHandler(log),
+	if logger == nil {
+		var err error
+		logger, err = zap.NewProduction()
+		if err != nil {
+			panic(err)
+		}
 	}
 
-	app := fiber.New(fiberConfig)
+	app := fiber.New(fiber.Config{
+		ErrorHandler: customErrorHandler(logger),
+	})
 
 	// Middleware
 	app.Use(recover.New())  // Auto-recovers from panics
 	app.Use(compress.New()) // Enable gzip compression
 
 	// Routes
-	app.Get("/health", healthCheckHandler(log))
-	app.Get("/liveness", livenessHandler)
-	app.Get("/readiness", readinessHandler)
+	app.Get("/health", healthCheckHandler(logger))
+	app.Get("/health/live", livenessHandler)
+	app.Get("/health/ready", readinessHandler)
 
-	// Monitoring and custom logging
-	app.Use(monitor.New()) // Expose metrics at /metrics
-	app.Use(customLoggingMiddleware(log))
+	// Metrics endpoint
+	app.Get("/metrics", metricsHandler(logger))
 
-	// Add search endpoints
-	app.Post("/search", searchHandler(index, log))
-	app.Post("/search/hybrid", hybridSearchHandler(index, log))
+	// Monitoring
+	app.Get("/dashboard", monitor.New())
 
-	// Add basic authentication middleware
-	app.Use(basicauth.New(basicauth.Config{
-		Users: map[string]string{
-			"admin": "password", // Replace with secure credentials
-		},
-	}))
+	// Add custom logging middleware
+	app.Use(customLoggingMiddleware(logger))
 
-	// Add JWT authentication middleware
-	app.Use(jwt.New(jwt.Config{
-		SigningKey: []byte("secret"), // Replace with a secure key
-	}))
+	// API routes
+	api := app.Group("/api")
+	v1 := api.Group("/v1")
 
-	return &Server{app: app, log: log, port: opts.Port, index: index}
+	// Search endpoints
+	v1.Post("/search", searchHandler(index, logger))
+	v1.Post("/search/hybrid", hybridSearchHandler(index, logger))
+
+	// Create server
+	server := &Server{
+		app:   app,
+		log:   logger,
+		port:  opts.Port,
+		index: index,
+	}
+
+	// Start metrics collection in a goroutine
+	go server.recordMetrics()
+
+	return server
 }
 
 // customErrorHandler provides structured error handling
@@ -298,19 +303,7 @@ func hybridSearchHandler(idx *quiver.Index, log *zap.Logger) fiber.Handler {
 	}
 }
 
-// StartTLS starts the server with TLS enabled.
+// StartTLS starts the server with TLS
 func (s *Server) StartTLS(certFile, keyFile string) error {
-	// Verify that the certificate files exist and are valid
-	if _, err := os.Stat(certFile); err != nil {
-		return fmt.Errorf("certificate file not found: %w", err)
-	}
-	if _, err := os.Stat(keyFile); err != nil {
-		return fmt.Errorf("key file not found: %w", err)
-	}
-
-	// Note: Fiber doesn't support passing a TLS config directly
-	// We recommend using TLS 1.2 or higher for security
-
-	// Start server with TLS
 	return s.app.ListenTLS(":"+s.port, certFile, keyFile)
 }
