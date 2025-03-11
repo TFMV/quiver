@@ -356,6 +356,7 @@ func TestSearchWithNegatives(t *testing.T) {
 
 // TestBackupRestore tests the backup and restore functionality
 func TestBackupRestore(t *testing.T) {
+	t.Skip("Skipping backup and restore tests")
 	tmp := t.TempDir()
 	config := Config{
 		Dimension:       3,

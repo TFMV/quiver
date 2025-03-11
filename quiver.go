@@ -10,7 +10,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +27,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/bytedance/sonic"
 	"github.com/coder/hnsw"
 	"go.uber.org/zap"
 )
@@ -610,7 +610,7 @@ func (idx *Index) flushBatch() error {
 	// Prepare batch for SQL execution - this is done outside of any locks
 	var values []string
 	for _, item := range batchToProcess {
-		metaJSON, err := json.Marshal(item.meta)
+		metaJSON, err := sonic.Marshal(item.meta)
 		if err != nil {
 			idx.logger.Error("failed to marshal metadata", zap.Uint64("id", item.id), zap.Error(err))
 			continue // Skip this item but continue processing others
@@ -1008,9 +1008,9 @@ func Load(config Config, logger *zap.Logger) (*Index, error) {
 			jsonStr := jsonCol.Value(i)
 
 			var meta map[string]interface{}
-			if err := json.Unmarshal([]byte(jsonStr), &meta); err != nil {
-				logger.Warn("Failed to unmarshal metadata", zap.Uint64("id", id), zap.Error(err))
-				continue
+			if err := sonic.Unmarshal([]byte(jsonStr), &meta); err != nil {
+				logger.Warn("failed to unmarshal metadata, storing raw JSON", zap.Uint64("id", id), zap.Error(err))
+				meta = map[string]interface{}{"metadata": jsonStr}
 			}
 
 			metadata[id] = meta
@@ -1242,9 +1242,10 @@ func (idx *Index) Backup(path string, incremental bool, compress bool) error {
 		"metadata_path":  "metadata.json",
 	}
 
-	manifestData, err := json.MarshalIndent(manifest, "", "  ")
+	// Create a manifest file with backup metadata
+	manifestData, err := sonic.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to create manifest: %w", err)
+		return fmt.Errorf("failed to marshal manifest: %w", err)
 	}
 
 	// Write manifest to both manifest.json (for backward compatibility) and backup.json (for restore)
@@ -1301,8 +1302,8 @@ func (idx *Index) Restore(backupPath string) error {
 	}
 
 	var backupInfo map[string]interface{}
-	if err := json.Unmarshal(metaData, &backupInfo); err != nil {
-		return fmt.Errorf("failed to parse backup metadata: %w", err)
+	if err := sonic.Unmarshal(metaData, &backupInfo); err != nil {
+		return fmt.Errorf("failed to unmarshal backup metadata: %w", err)
 	}
 
 	// Check backup format version
@@ -1461,8 +1462,8 @@ func (idx *Index) exportMetadata(filePath string, compress bool) error {
 		metadataArray = append(metadataArray, itemMeta)
 	}
 
-	// Marshal to JSON
-	jsonData, err := json.MarshalIndent(metadataArray, "", "  ")
+	// Marshal metadata to JSON
+	jsonData, err := sonic.MarshalIndent(metadataArray, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
@@ -1527,7 +1528,7 @@ func (idx *Index) importMetadata(filePath string, compressed bool) error {
 
 	// Parse metadata
 	var metadataArray []map[string]interface{}
-	if err := json.Unmarshal(jsonData, &metadataArray); err != nil {
+	if err := sonic.Unmarshal(jsonData, &metadataArray); err != nil {
 		return fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 
@@ -2245,7 +2246,7 @@ func (idx *Index) BatchAppendFromArrow(records []arrow.Record) error {
 				metaJSON := metadataCol.Value(i)
 				meta = make(map[string]interface{})
 
-				err := json.Unmarshal([]byte(metaJSON), &meta)
+				err := sonic.Unmarshal([]byte(metaJSON), &meta)
 				if err != nil {
 					idx.logger.Warn("failed to unmarshal metadata, storing raw JSON", zap.Uint64("id", id), zap.Error(err))
 					meta = map[string]interface{}{"metadata": metaJSON}
@@ -2341,7 +2342,7 @@ func (idx *Index) BatchAppendFromArrow(records []arrow.Record) error {
 				// Add data to builders
 				for _, item := range allBatchItems[i:end] {
 					// Convert metadata to JSON
-					metaJSON, err := json.Marshal(item.meta)
+					metaJSON, err := sonic.Marshal(item.meta)
 					if err != nil {
 						idx.logger.Error("failed to marshal metadata", zap.Error(err), zap.Uint64("id", item.id))
 						metaJSON = []byte("{}")
