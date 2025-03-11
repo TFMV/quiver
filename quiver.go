@@ -1190,35 +1190,42 @@ func (idx *Index) Backup(path string, incremental bool, compress bool) error {
 		return fmt.Errorf("failed to flush batch before backup: %w", err)
 	}
 
-	indexFile := filepath.Join(idx.config.StoragePath, "index.hnsw")
-	backupIndexFile := filepath.Join(path, "index.hnsw")
+	// Export HNSW graph directly using the Export method
+	indexFile := filepath.Join(path, "index.hnsw")
+	var indexBuffer bytes.Buffer
 
-	// Read source file
-	srcData, err := os.ReadFile(indexFile)
-	if err != nil {
-		return fmt.Errorf("failed to read index file: %w", err)
+	// Use the Export method to write the graph to our buffer
+	if err := idx.hnsw.Export(&indexBuffer); err != nil {
+		return fmt.Errorf("failed to export HNSW graph: %w", err)
 	}
 
 	// Calculate checksum for verification
-	checksum := sha256.Sum256(srcData)
+	indexData := indexBuffer.Bytes()
+	checksum := sha256.Sum256(indexData)
 
 	// Handle compression if requested
 	if compress {
-		backupIndexFile += ".gz"
+		indexFile += ".gz"
 		var compressedData bytes.Buffer
 		gzWriter := gzip.NewWriter(&compressedData)
-		if _, err := gzWriter.Write(srcData); err != nil {
+		if _, err := gzWriter.Write(indexData); err != nil {
 			return fmt.Errorf("failed to compress index file: %w", err)
 		}
 		if err := gzWriter.Close(); err != nil {
 			return fmt.Errorf("failed to finalize compression: %w", err)
 		}
-		srcData = compressedData.Bytes()
+		indexData = compressedData.Bytes()
 	}
 
 	// Write to backup location
-	if err := os.WriteFile(backupIndexFile, srcData, 0644); err != nil {
+	if err := os.WriteFile(indexFile, indexData, 0644); err != nil {
 		return fmt.Errorf("failed to write backup index file: %w", err)
+	}
+
+	// Export vectors for complete backup
+	vectorsFile := filepath.Join(path, "vectors.json")
+	if err := idx.exportVectors(vectorsFile, compress); err != nil {
+		return fmt.Errorf("failed to export vectors: %w", err)
 	}
 
 	// Export metadata
@@ -1240,6 +1247,7 @@ func (idx *Index) Backup(path string, incremental bool, compress bool) error {
 		"config":         idx.config,
 		"index_path":     "index.hnsw",
 		"metadata_path":  "metadata.json",
+		"vectors_path":   "vectors.json",
 	}
 
 	// Create a manifest file with backup metadata
@@ -1267,6 +1275,109 @@ func (idx *Index) Backup(path string, incremental bool, compress bool) error {
 	return nil
 }
 
+// exportVectors exports the vectors to a JSON file
+func (idx *Index) exportVectors(filePath string, compress bool) error {
+	// Create a slice to hold all vectors
+	type vectorEntry struct {
+		ID     uint64    `json:"id"`
+		Vector []float32 `json:"vector"`
+	}
+
+	vectorsArray := make([]vectorEntry, 0, len(idx.vectors))
+
+	// Add all vectors to the array
+	for id, vector := range idx.vectors {
+		vectorsArray = append(vectorsArray, vectorEntry{
+			ID:     id,
+			Vector: vector,
+		})
+	}
+
+	// Marshal to JSON
+	jsonData, err := sonic.MarshalIndent(vectorsArray, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal vectors: %w", err)
+	}
+
+	// Handle compression if requested
+	if compress {
+		filePath += ".gz"
+		var compressedData bytes.Buffer
+		gzWriter := gzip.NewWriter(&compressedData)
+		if _, err := gzWriter.Write(jsonData); err != nil {
+			return fmt.Errorf("failed to compress vectors: %w", err)
+		}
+		if err := gzWriter.Close(); err != nil {
+			return fmt.Errorf("failed to finalize compression: %w", err)
+		}
+		jsonData = compressedData.Bytes()
+	}
+
+	// Write to file
+	if err := os.WriteFile(filePath, jsonData, 0644); err != nil {
+		return fmt.Errorf("failed to write vectors file: %w", err)
+	}
+
+	return nil
+}
+
+// importVectors imports vectors from a JSON file
+func (idx *Index) importVectors(filePath string, compressed bool) error {
+	// Read the file
+	var jsonData []byte
+	var err error
+
+	if compressed {
+		// Read compressed file
+		file, err := os.Open(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to open compressed vectors file: %w", err)
+		}
+		defer file.Close()
+
+		gzReader, err := gzip.NewReader(file)
+		if err != nil {
+			return fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		defer gzReader.Close()
+
+		jsonData, err = io.ReadAll(gzReader)
+		if err != nil {
+			return fmt.Errorf("failed to read compressed vectors file: %w", err)
+		}
+	} else {
+		// Read uncompressed file
+		jsonData, err = os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to read vectors file: %w", err)
+		}
+	}
+
+	// Parse vectors
+	type vectorEntry struct {
+		ID     uint64    `json:"id"`
+		Vector []float32 `json:"vector"`
+	}
+
+	var vectorsArray []vectorEntry
+	if err := sonic.Unmarshal(jsonData, &vectorsArray); err != nil {
+		return fmt.Errorf("failed to unmarshal vectors: %w", err)
+	}
+
+	// Clear existing vectors
+	idx.vectors = make(map[uint64][]float32, len(vectorsArray))
+
+	// Add vectors to the map
+	for _, entry := range vectorsArray {
+		// Make a copy of the vector to ensure it's not shared
+		vector := make([]float32, len(entry.Vector))
+		copy(vector, entry.Vector)
+		idx.vectors[entry.ID] = vector
+	}
+
+	return nil
+}
+
 // Restore restores the index from a backup file.
 func (idx *Index) Restore(backupPath string) error {
 	idx.lock.Lock()
@@ -1288,9 +1399,31 @@ func (idx *Index) Restore(backupPath string) error {
 			return fmt.Errorf("failed to extract backup: %w", err)
 		}
 	} else {
-		// Just copy the files
-		if err := copyFile(backupPath, filepath.Join(tempDir, "backup.json")); err != nil {
-			return fmt.Errorf("failed to copy backup file: %w", err)
+		// If backupPath is a directory, copy all files from it
+		fileInfo, err := os.Stat(backupPath)
+		if err != nil {
+			return fmt.Errorf("failed to stat backup path: %w", err)
+		}
+
+		if fileInfo.IsDir() {
+			// Copy all files from the backup directory to the temp directory
+			entries, err := os.ReadDir(backupPath)
+			if err != nil {
+				return fmt.Errorf("failed to read backup directory: %w", err)
+			}
+
+			for _, entry := range entries {
+				srcPath := filepath.Join(backupPath, entry.Name())
+				dstPath := filepath.Join(tempDir, entry.Name())
+				if err := copyFile(srcPath, dstPath); err != nil {
+					return fmt.Errorf("failed to copy file %s: %w", entry.Name(), err)
+				}
+			}
+		} else {
+			// Just copy the backup file
+			if err := copyFile(backupPath, filepath.Join(tempDir, "backup.json")); err != nil {
+				return fmt.Errorf("failed to copy backup file: %w", err)
+			}
 		}
 	}
 
@@ -1321,31 +1454,107 @@ func (idx *Index) Restore(backupPath string) error {
 	if !ok {
 		return errors.New("backup metadata missing metadata_path")
 	}
-
-	// Copy files to their destinations
-	destIndexPath := filepath.Join(idx.config.StoragePath, "index.hnsw")
-	destMetadataPath := filepath.Join(idx.config.StoragePath, "metadata.json")
-
-	if err := copyFile(filepath.Join(tempDir, indexPath), destIndexPath); err != nil {
-		return fmt.Errorf("failed to copy index file: %w", err)
+	vectorsPath, ok := backupInfo["vectors_path"].(string) // Optional for backward compatibility
+	if !ok {
+		vectorsPath = "vectors.json" // Default path if not specified
 	}
 
-	if err := copyFile(filepath.Join(tempDir, metadataPath), destMetadataPath); err != nil {
-		return fmt.Errorf("failed to copy metadata file: %w", err)
+	// Check if the index file is compressed
+	indexFilePath := filepath.Join(tempDir, indexPath)
+	compress, _ := backupInfo["compressed"].(bool)
+	if compress {
+		indexFilePath += ".gz"
 	}
 
-	// Create a new graph since the coder/hnsw library doesn't have a Load function
+	// Verify the index file exists
+	if _, err := os.Stat(indexFilePath); os.IsNotExist(err) {
+		return fmt.Errorf("failed to read index file: %w", err)
+	}
+
+	// Read the index file
+	var indexData []byte
+	if strings.HasSuffix(indexFilePath, ".gz") {
+		// Decompress the index file
+		file, err := os.Open(indexFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to open compressed index file: %w", err)
+		}
+		defer file.Close()
+
+		gzReader, err := gzip.NewReader(file)
+		if err != nil {
+			return fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		defer gzReader.Close()
+
+		indexData, err = io.ReadAll(gzReader)
+		if err != nil {
+			return fmt.Errorf("failed to read compressed index file: %w", err)
+		}
+	} else {
+		// Read uncompressed index file
+		indexData, err = os.ReadFile(indexFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to read index file: %w", err)
+		}
+	}
+
+	// Create a new graph
 	newGraph := hnsw.NewGraph[uint64]()
 
-	// TODO: Implement loading vectors from backup into the graph
-	// This would require reading the vectors from the backup and adding them to the graph
+	// Import the graph data using the Import method
+	if err := newGraph.Import(bytes.NewReader(indexData)); err != nil {
+		return fmt.Errorf("failed to import HNSW graph: %w", err)
+	}
 
 	// Update the index with the restored HNSW
 	idx.hnsw = newGraph
 
+	// Import metadata
+	metadataFilePath := filepath.Join(tempDir, metadataPath)
+	if compress && !strings.HasSuffix(metadataFilePath, ".gz") {
+		metadataFilePath += ".gz"
+	}
+
+	// Verify the metadata file exists
+	if _, err := os.Stat(metadataFilePath); os.IsNotExist(err) {
+		return fmt.Errorf("failed to read metadata file: %w", err)
+	}
+
+	if err := idx.importMetadata(metadataFilePath, strings.HasSuffix(metadataFilePath, ".gz")); err != nil {
+		return fmt.Errorf("failed to import metadata: %w", err)
+	}
+
+	// Import vectors if available
+	vectorsFilePath := filepath.Join(tempDir, vectorsPath)
+	if compress && !strings.HasSuffix(vectorsFilePath, ".gz") {
+		vectorsFilePath += ".gz"
+	}
+
+	// Verify the vectors file exists
+	if _, err := os.Stat(vectorsFilePath); os.IsNotExist(err) {
+		idx.logger.Warn("vectors file not found, creating empty vectors", zap.String("path", vectorsFilePath))
+		idx.vectors = make(map[uint64][]float32)
+		for id := range idx.metadata {
+			idx.vectors[id] = make([]float32, idx.config.Dimension)
+		}
+	} else {
+		if err := idx.importVectors(vectorsFilePath, strings.HasSuffix(vectorsFilePath, ".gz")); err != nil {
+			// If vectors file is not available, create empty vectors
+			idx.logger.Warn("failed to import vectors, creating empty vectors", zap.Error(err))
+			idx.vectors = make(map[uint64][]float32)
+			for id := range idx.metadata {
+				idx.vectors[id] = make([]float32, idx.config.Dimension)
+			}
+		}
+	}
+
 	idx.logger.Info("index restored successfully",
 		zap.String("backup_path", backupPath),
-		zap.String("storage_path", idx.config.StoragePath))
+		zap.String("storage_path", idx.config.StoragePath),
+		zap.Int("vector_count", idx.hnsw.Len()),
+		zap.Int("metadata_count", len(idx.metadata)),
+		zap.Int("vectors_count", len(idx.vectors)))
 	return nil
 }
 
@@ -1497,13 +1706,8 @@ func (idx *Index) exportMetadata(filePath string, compress bool) error {
 
 // importMetadata imports metadata from a JSON file with optional decryption
 func (idx *Index) importMetadata(filePath string, compressed bool) error {
-	filePathToRead := filePath
-	if compressed {
-		filePathToRead += ".gz"
-	}
-
 	// Read and decrypt file
-	fileData, err := idx.readEncrypted(filePathToRead)
+	fileData, err := idx.readEncrypted(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read metadata file: %w", err)
 	}
@@ -1540,6 +1744,14 @@ func (idx *Index) importMetadata(filePath string, compressed bool) error {
 			continue
 		}
 		delete(item, "_id")
+
+		// Convert float64 values back to int when appropriate
+		for k, v := range item {
+			if floatVal, ok := v.(float64); ok && floatVal == float64(int(floatVal)) {
+				item[k] = int(floatVal)
+			}
+		}
+
 		idx.metadata[uint64(id)] = item
 	}
 

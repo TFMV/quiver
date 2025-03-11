@@ -356,7 +356,6 @@ func TestSearchWithNegatives(t *testing.T) {
 
 // TestBackupRestore tests the backup and restore functionality
 func TestBackupRestore(t *testing.T) {
-	t.Skip("Skipping backup and restore tests")
 	tmp := t.TempDir()
 	config := Config{
 		Dimension:       3,
@@ -388,20 +387,31 @@ func TestBackupRestore(t *testing.T) {
 	err = idx.flushBatch()
 	assert.NoError(t, err)
 
+	// Perform a search to verify the index is working
+	query := []float32{0.5, 1.0, 1.5}
+	results, err := idx.Search(query, 5, 0, 5)
+	assert.NoError(t, err)
+	assert.Len(t, results, 5, "Should return 5 results")
+
 	// Create a backup
 	backupDir := filepath.Join(tmp, "backup")
 	err = idx.Backup(backupDir, false, false)
 	assert.NoError(t, err)
 
 	// Verify backup files exist
-	_, err = os.Stat(filepath.Join(backupDir, "index.hnsw"))
-	assert.NoError(t, err)
-	_, err = os.Stat(filepath.Join(backupDir, "metadata.json"))
-	assert.NoError(t, err)
-	_, err = os.Stat(filepath.Join(backupDir, "manifest.json"))
-	assert.NoError(t, err)
-	_, err = os.Stat(filepath.Join(backupDir, "backup.json"))
-	assert.NoError(t, err)
+	backupFiles := []string{
+		"index.hnsw",
+		"metadata.json",
+		"vectors.json",
+		"manifest.json",
+		"backup.json",
+	}
+
+	for _, file := range backupFiles {
+		path := filepath.Join(backupDir, file)
+		_, err = os.Stat(path)
+		assert.NoError(t, err, "Backup file %s should exist", file)
+	}
 
 	// Create a new index for restore
 	restoreConfig := Config{
@@ -417,13 +427,52 @@ func TestBackupRestore(t *testing.T) {
 	restoreIdx, err := New(restoreConfig, testLogger)
 	assert.NoError(t, err)
 
-	// Restore from backup
-	err = restoreIdx.Restore(filepath.Join(backupDir, "backup.json"))
+	// Restore directly from the backup directory
+	err = restoreIdx.Restore(backupDir)
 	assert.NoError(t, err)
 
 	// Verify the restored index has the same data
-	// This would require implementing a method to compare indices
-	// For now, we just check that the restore operation completed without errors
+	// 1. Check that the number of vectors is the same
+	assert.Equal(t, idx.hnsw.Len(), restoreIdx.hnsw.Len(), "Restored index should have the same number of vectors")
+
+	// 2. Check that metadata is restored correctly
+	for i := 1; i <= 20; i++ {
+		id := uint64(i)
+		originalMeta := idx.metadata[id]
+		restoredMeta := restoreIdx.metadata[id]
+		assert.Equal(t, originalMeta["name"], restoredMeta["name"], "Metadata name should match for ID %d", id)
+		assert.Equal(t, originalMeta["value"], restoredMeta["value"], "Metadata value should match for ID %d", id)
+		assert.Equal(t, originalMeta["category"], restoredMeta["category"], "Metadata category should match for ID %d", id)
+	}
+
+	// 3. Check that vectors are restored correctly
+	for i := 1; i <= 20; i++ {
+		id := uint64(i)
+		originalVector := idx.vectors[id]
+		restoredVector := restoreIdx.vectors[id]
+		assert.Equal(t, originalVector, restoredVector, "Vector should match for ID %d", id)
+	}
+
+	// 4. Perform the same search on the restored index and verify results are similar
+	restoredResults, err := restoreIdx.Search(query, 5, 0, 5)
+	assert.NoError(t, err)
+	assert.Len(t, restoredResults, 5, "Restored index should return 5 results")
+
+	// The results might not be exactly the same due to how HNSW works, but they should be similar
+	// Let's check that at least 3 of the top 5 results are the same
+	originalIDs := make(map[uint64]bool)
+	for _, result := range results {
+		originalIDs[result.ID] = true
+	}
+
+	matchCount := 0
+	for _, result := range restoredResults {
+		if originalIDs[result.ID] {
+			matchCount++
+		}
+	}
+
+	assert.GreaterOrEqual(t, matchCount, 3, "At least 3 of the top 5 results should match between original and restored index")
 }
 
 // TestAddWithImmediateFlush tests that the Add method performs an immediate flush when the batch buffer is full
