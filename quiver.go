@@ -115,7 +115,8 @@ type Index struct {
 	// A waitgroup to ensure background workers exit on close.
 	bgWG sync.WaitGroup
 	// Dimensionality reduction fields
-	dimReducer interface{} // Will hold a dimreduce.DimReducer if enabled
+	dimReducer        interface{} // Will hold a dimreduce.DimReducer if enabled
+	originalDimension int         // Original dimension before reduction
 }
 
 // DuckDBOptions define the configuration for opening a DuckDB database.
@@ -361,9 +362,57 @@ func (c *DuckDBConn) Close() error {
 	return err
 }
 
-// New creates a new index with the given configuration.
-// If an existing index is found (in StoragePath), Load is used.
+// New creates a new Quiver index with the given configuration.
 func New(config Config, logger *zap.Logger) (*Index, error) {
+	// Validate configuration
+	issues := ValidateConfig(config)
+
+	// Check for critical errors
+	var errorCount int
+	for _, issue := range issues {
+		if issue.Severity == Error {
+			errorCount++
+			logger.Error("Configuration error",
+				zap.String("field", issue.Field),
+				zap.Any("value", issue.Value),
+				zap.String("message", issue.Message),
+				zap.String("suggestion", issue.Suggestion))
+		}
+	}
+
+	// If there are errors, return a detailed error message
+	if errorCount > 0 {
+		return nil, fmt.Errorf("invalid configuration: %d critical errors found. See logs for details", errorCount)
+	}
+
+	// Log warnings
+	for _, issue := range issues {
+		if issue.Severity == Warning {
+			logger.Warn("Configuration warning",
+				zap.String("field", issue.Field),
+				zap.Any("value", issue.Value),
+				zap.String("message", issue.Message),
+				zap.String("suggestion", issue.Suggestion))
+		}
+	}
+
+	// Log informational issues
+	for _, issue := range issues {
+		if issue.Severity == Info {
+			logger.Info("Configuration suggestion",
+				zap.String("field", issue.Field),
+				zap.Any("value", issue.Value),
+				zap.String("message", issue.Message),
+				zap.String("suggestion", issue.Suggestion))
+		}
+	}
+
+	// Set default values for optional fields
+	if config.BatchSize <= 0 {
+		config.BatchSize = 1000
+		logger.Info("Using default batch size", zap.Int("batchSize", config.BatchSize))
+	}
+
 	// Validate config
 	if config.Dimension <= 0 {
 		return nil, errors.New("dimension must be positive")
@@ -379,9 +428,6 @@ func New(config Config, logger *zap.Logger) (*Index, error) {
 	}
 	if config.HNSWEfSearch <= 0 {
 		config.HNSWEfSearch = 100 // Default to a reasonable value
-	}
-	if config.BatchSize <= 0 {
-		config.BatchSize = 1000 // Default to a reasonable value
 	}
 
 	// Set default persistence interval
@@ -425,6 +471,7 @@ func New(config Config, logger *zap.Logger) (*Index, error) {
 	}
 
 	// If dimensionality reduction is enabled, validate the configuration
+	originalDimension := config.Dimension
 	if config.EnableDimReduction {
 		if config.DimReductionTarget <= 0 || config.DimReductionTarget >= config.Dimension {
 			return nil, fmt.Errorf("invalid target dimension for reduction: %d (must be > 0 and < %d)",
@@ -439,6 +486,13 @@ func New(config Config, logger *zap.Logger) (*Index, error) {
 			return nil, fmt.Errorf("invalid minimum variance for adaptive reduction: %f (must be > 0 and <= 1.0)",
 				config.DimReductionMinVariance)
 		}
+
+		// Update the dimension to the target dimension for the HNSW graph
+		config.Dimension = config.DimReductionTarget
+		logger.Info("Dimensionality reduction enabled",
+			zap.Int("original_dimension", originalDimension),
+			zap.Int("reduced_dimension", config.Dimension),
+			zap.String("method", config.DimReductionMethod))
 	}
 
 	// Initialize HNSW graph with the specified parameters
@@ -470,21 +524,22 @@ func New(config Config, logger *zap.Logger) (*Index, error) {
 	}
 
 	idx := &Index{
-		config:          config,
-		hnsw:            graph,
-		metadata:        make(map[uint64]map[string]interface{}),
-		vectors:         make(map[uint64][]float32),
-		duckdb:          duckdb,
-		dbConn:          dbConn,
-		batchBuffer:     make([]vectorMeta, 0, config.BatchSize),
-		logger:          logger,
-		batchTicker:     time.NewTicker(time.Second),
-		batchDone:       make(chan struct{}),
-		persistInterval: persistInterval,
-		persistTicker:   time.NewTicker(persistInterval),
-		persistDone:     make(chan struct{}),
-		backupTicker:    time.NewTicker(backupInterval),
-		backupDone:      make(chan struct{}),
+		config:            config,
+		hnsw:              graph,
+		metadata:          make(map[uint64]map[string]interface{}),
+		vectors:           make(map[uint64][]float32),
+		duckdb:            duckdb,
+		dbConn:            dbConn,
+		batchBuffer:       make([]vectorMeta, 0, config.BatchSize),
+		logger:            logger,
+		batchTicker:       time.NewTicker(time.Second),
+		batchDone:         make(chan struct{}),
+		persistInterval:   persistInterval,
+		persistTicker:     time.NewTicker(persistInterval),
+		persistDone:       make(chan struct{}),
+		backupTicker:      time.NewTicker(backupInterval),
+		backupDone:        make(chan struct{}),
+		originalDimension: originalDimension,
 	}
 
 	// Initialize dimensionality reduction if enabled
@@ -601,6 +656,18 @@ func (idx *Index) flushBatch() error {
 
 // Add adds a vector to the index with the specified ID and metadata.
 func (idx *Index) Add(id uint64, vector []float32, meta map[string]interface{}) error {
+	// Validate input before dimensionality reduction
+	if !idx.config.EnableDimReduction || idx.dimReducer == nil {
+		if len(vector) != idx.config.Dimension {
+			return fmt.Errorf("vector dimension (%d) does not match index dimension (%d)", len(vector), idx.config.Dimension)
+		}
+	} else {
+		// If dimensionality reduction is enabled, check against original dimension
+		if len(vector) != idx.originalDimension {
+			return fmt.Errorf("vector dimension (%d) does not match original dimension (%d)", len(vector), idx.originalDimension)
+		}
+	}
+
 	// If dimensionality reduction is enabled, reduce the vector
 	if idx.config.EnableDimReduction && idx.dimReducer != nil {
 		// We'll implement the actual reduction in a separate file
@@ -610,11 +677,6 @@ func (idx *Index) Add(id uint64, vector []float32, meta map[string]interface{}) 
 			return fmt.Errorf("failed to reduce vector dimensions: %w", err)
 		}
 		vector = reducedVector
-	}
-
-	// Validate input
-	if len(vector) != idx.config.Dimension {
-		return fmt.Errorf("vector dimension (%d) does not match index dimension (%d)", len(vector), idx.config.Dimension)
 	}
 
 	// Make a copy of the metadata map to ensure it isn't modified externally
@@ -647,6 +709,18 @@ func (idx *Index) Add(id uint64, vector []float32, meta map[string]interface{}) 
 // Search performs a vector similarity search and returns the k most similar vectors.
 // Supports pagination with page and pageSize parameters.
 func (idx *Index) Search(query []float32, k, page, pageSize int) ([]SearchResult, error) {
+	// Validate query dimension
+	if !idx.config.EnableDimReduction || idx.dimReducer == nil {
+		if len(query) != idx.config.Dimension {
+			return nil, fmt.Errorf("query dimension (%d) does not match index dimension (%d)", len(query), idx.config.Dimension)
+		}
+	} else {
+		// If dimensionality reduction is enabled, check against original dimension
+		if len(query) != idx.originalDimension {
+			return nil, fmt.Errorf("query dimension (%d) does not match original dimension (%d)", len(query), idx.originalDimension)
+		}
+	}
+
 	// If dimensionality reduction is enabled, reduce the query vector
 	if idx.config.EnableDimReduction && idx.dimReducer != nil {
 		// We'll implement the actual reduction in a separate file
@@ -862,6 +936,31 @@ func (idx *Index) Save(saveDir string) error {
 func Load(config Config, logger *zap.Logger) (*Index, error) {
 	storageDir := filepath.Dir(config.StoragePath)
 
+	// If dimensionality reduction is enabled, validate the configuration
+	originalDimension := config.Dimension
+	if config.EnableDimReduction {
+		if config.DimReductionTarget <= 0 || config.DimReductionTarget >= config.Dimension {
+			return nil, fmt.Errorf("invalid target dimension for reduction: %d (must be > 0 and < %d)",
+				config.DimReductionTarget, config.Dimension)
+		}
+
+		if config.DimReductionMethod == "" {
+			config.DimReductionMethod = "PCA" // Default to PCA
+		}
+
+		if config.DimReductionAdaptive && (config.DimReductionMinVariance <= 0 || config.DimReductionMinVariance > 1.0) {
+			return nil, fmt.Errorf("invalid minimum variance for adaptive reduction: %f (must be > 0 and <= 1.0)",
+				config.DimReductionMinVariance)
+		}
+
+		// Update the dimension to the target dimension for the HNSW graph
+		config.Dimension = config.DimReductionTarget
+		logger.Info("Dimensionality reduction enabled",
+			zap.Int("original_dimension", originalDimension),
+			zap.Int("reduced_dimension", config.Dimension),
+			zap.String("method", config.DimReductionMethod))
+	}
+
 	// Initialize a new HNSW graph
 	graph := hnsw.NewGraph[uint64]()
 
@@ -934,21 +1033,32 @@ func Load(config Config, logger *zap.Logger) (*Index, error) {
 	}
 
 	idx := &Index{
-		config:          config,
-		hnsw:            graph,
-		metadata:        metadata,
-		vectors:         vectors,
-		duckdb:          duckdb,
-		dbConn:          dbConn,
-		batchBuffer:     make([]vectorMeta, 0, config.BatchSize),
-		logger:          logger,
-		batchTicker:     time.NewTicker(time.Second),
-		batchDone:       make(chan struct{}),
-		persistInterval: persistInterval,
-		persistTicker:   time.NewTicker(persistInterval),
-		persistDone:     make(chan struct{}),
-		backupTicker:    time.NewTicker(config.BackupInterval),
-		backupDone:      make(chan struct{}),
+		config:            config,
+		hnsw:              graph,
+		metadata:          metadata,
+		vectors:           vectors,
+		duckdb:            duckdb,
+		dbConn:            dbConn,
+		batchBuffer:       make([]vectorMeta, 0, config.BatchSize),
+		logger:            logger,
+		batchTicker:       time.NewTicker(time.Second),
+		batchDone:         make(chan struct{}),
+		persistInterval:   persistInterval,
+		persistTicker:     time.NewTicker(persistInterval),
+		persistDone:       make(chan struct{}),
+		backupTicker:      time.NewTicker(config.BackupInterval),
+		backupDone:        make(chan struct{}),
+		originalDimension: originalDimension,
+	}
+
+	// Initialize dimensionality reduction if enabled
+	if config.EnableDimReduction {
+		// We'll initialize the dimensionality reducer in a separate function
+		// to avoid import cycles
+		err := idx.initDimReducer()
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize dimensionality reducer: %w", err)
+		}
 	}
 
 	// Restart background workers.

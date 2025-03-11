@@ -8,6 +8,7 @@ require (
 	github.com/coder/hnsw v0.6.1
 	github.com/gofiber/fiber/v2 v2.52.6
 	github.com/google/uuid v1.6.0
+	github.com/olekukonko/tablewriter v0.0.5
 	github.com/prometheus/client_golang v1.21.1
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.19.0

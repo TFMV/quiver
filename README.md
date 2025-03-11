@@ -353,6 +353,131 @@ func main() {
 }
 ```
 
+## Command Line Interface
+
+Quiver comes with a comprehensive command-line interface (CLI) that provides tools for both running the server and managing vector databases. The CLI offers a unified experience for all Quiver operations.
+
+### Installation
+
+Build the CLI from source:
+
+```bash
+# Clone the repository
+git clone https://github.com/TFMV/quiver.git
+cd quiver
+
+# Build the CLI
+go build -o quiver ./cmd/main.go
+
+# Move to a directory in your PATH (optional)
+sudo mv quiver /usr/local/bin/
+```
+
+### Available Commands
+
+The Quiver CLI includes the following commands:
+
+**Server Management:**
+
+- `serve`: Start the Quiver server
+- `status`: Check if the Quiver server is running
+
+**Database Operations:**
+
+- `info`: Display information about the index
+- `stats`: Show statistics about the index
+- `benchmark`: Run performance benchmarks
+- `optimize`: Optimize the index for better performance
+- `health`: Check the health of the index
+
+**Data Management:**
+
+- `import`: Import vectors and metadata from a file
+- `export`: Export index metadata to a file
+- `backup`: Create a backup of the index
+- `restore`: Restore the index from a backup
+- `validate`: Validate a configuration file
+
+### Examples
+
+**Starting the server:**
+
+```bash
+# Start with default configuration
+quiver serve
+
+# Start with a custom configuration file
+quiver serve --config my-config.yaml
+
+# Start with a specific index path
+quiver serve --index /path/to/index
+```
+
+**Managing the database:**
+
+```bash
+# Get information about the index
+quiver info --index /path/to/index
+
+# Show statistics
+quiver stats
+
+# Run benchmarks
+quiver benchmark
+
+# Create a backup
+quiver backup /path/to/backup
+
+# Restore from backup
+quiver restore /path/to/backup
+
+# Check server status
+quiver status
+```
+
+**Working with data:**
+
+```bash
+# Export metadata to a file
+quiver export metadata.json
+
+# Import vectors and metadata
+quiver import vectors.json
+
+# Validate a configuration file
+quiver validate config.json
+```
+
+### Configuration
+
+The CLI can be configured using a YAML configuration file. By default, it looks for `config.yaml` in the current directory, but you can specify a different file with the `--config` flag.
+
+Example configuration file:
+
+```yaml
+server:
+  port: 8080
+
+index:
+  dimension: 128
+  storage_path: "quiver.db"
+  max_elements: 100000
+  hnsw_m: 32
+  ef_construction: 200
+  ef_search: 200
+  batch_size: 1000
+  distance: 0  # 0 for Cosine, 1 for L2
+```
+
+### Global Flags
+
+The following flags are available for all commands:
+
+- `--config`: Specify a configuration file
+- `--index, -i`: Specify the index path (overrides the config file)
+- `--verbose, -v`: Enable verbose output
+- `--help, -h`: Show help for a command
+
 ## Performance
 
 Quiver is designed for high performance. Here are benchmark results on an M2 Pro CPU:

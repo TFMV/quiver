@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .Title }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            padding-top: 20px;
+        }
+        .card {
+            margin-bottom: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .card-header {
+            background-color: #7E57C2;
+            color: white;
+            font-weight: bold;
+            border-radius: 10px 10px 0 0 !important;
+        }
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #333;
+        }
+        .metric-label {
+            font-size: 0.9rem;
+            color: #666;
+        }
+        .status-healthy {
+            color: #28a745;
+        }
+        .status-unhealthy {
+            color: #dc3545;
+        }
+        .navbar-brand img {
+            height: 30px;
+            margin-right: 10px;
+        }
+        .refresh-info {
+            font-size: 0.8rem;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4 rounded">
+            <div class="container-fluid">
+                <a class="navbar-brand" href="#">
+                    <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTEyIDJMMi41IDEzLjVoNi45TDYuMSAyMmgxLjZsMTMuOC0xMS41aC02LjlMMTcuOSAyaC0xLjZ6Ii8+PC9zdmc+" alt="Quiver Logo">
+                    {{ .Title }}
+                </a>
+                <div class="d-flex">
+                    <span class="navbar-text refresh-info">
+                        Auto-refresh: {{ .RefreshInterval }}s | Last updated: <span id="last-updated">{{ .Timestamp }}</span>
+                    </span>
+                </div>
+            </div>
+        </nav>
+
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card">
+                    <div class="card-header">Vector Count</div>
+                    <div class="card-body text-center">
+                        <div class="metric-value" id="vector-count">-</div>
+                        <div class="metric-label">Total vectors in index</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card">
+                    <div class="card-header">Memory Usage</div>
+                    <div class="card-body text-center">
+                        <div class="metric-value" id="memory-usage">-</div>
+                        <div class="metric-label">Total memory used</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card">
+                    <div class="card-header">Query Latency</div>
+                    <div class="card-body text-center">
+                        <div class="metric-value" id="query-latency">-</div>
+                        <div class="metric-label">Average search time</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card">
+                    <div class="card-header">Health Status</div>
+                    <div class="card-body text-center">
+                        <div class="metric-value" id="health-status">-</div>
+                        <div class="metric-label" id="health-message">Checking status...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">Operations</div>
+                    <div class="card-body">
+                        <canvas id="operations-chart" height="200"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">Memory Usage Over Time</div>
+                    <div class="card-body">
+                        <canvas id="memory-chart" height="200"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">Configuration</div>
+                    <div class="card-body">
+                        <table class="table table-striped">
+                            <tbody>
+                                <tr>
+                                    <th>Dimension</th>
+                                    <td>{{ .Config.Dimension }}</td>
+                                </tr>
+                                <tr>
+                                    <th>Distance Metric</th>
+                                    <td>{{ if eq .Config.Distance 0 }}Cosine{{ else }}L2{{ end }}</td>
+                                </tr>
+                                <tr>
+                                    <th>HNSW M</th>
+                                    <td>{{ .Config.HNSWM }}</td>
+                                </tr>
+                                <tr>
+                                    <th>HNSW Ef Construction</th>
+                                    <td>{{ .Config.HNSWEfConstruct }}</td>
+                                </tr>
+                                <tr>
+                                    <th>HNSW Ef Search</th>
+                                    <td>{{ .Config.HNSWEfSearch }}</td>
+                                </tr>
+                                <tr>
+                                    <th>Batch Size</th>
+                                    <td>{{ .Config.BatchSize }}</td>
+                                </tr>
+                                <tr>
+                                    <th>Encryption</th>
+                                    <td>{{ if .Config.EncryptionEnabled }}Enabled{{ else }}Disabled{{ end }}</td>
+                                </tr>
+                                <tr>
+                                    <th>Dimensionality Reduction</th>
+                                    <td>{{ if .Config.EnableDimReduction }}Enabled ({{ .Config.DimReductionMethod }}, Target: {{ .Config.DimReductionTarget }}){{ else }}Disabled{{ end }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">All Metrics</div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-sm" id="metrics-table">
+                                <thead>
+                                    <tr>
+                                        <th>Metric</th>
+                                        <th>Value</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Metrics will be populated here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Chart objects
+        let operationsChart = null;
+        let memoryChart = null;
+        
+        // Historical data
+        const operationsData = {
+            labels: [],
+            adds: [],
+            searches: [],
+            deletes: []
+        };
+        
+        const memoryData = {
+            labels: [],
+            values: []
+        };
+        
+        // Initialize charts
+        function initCharts() {
+            const operationsCtx = document.getElementById('operations-chart').getContext('2d');
+            operationsChart = new Chart(operationsCtx, {
+                type: 'line',
+                data: {
+                    labels: operationsData.labels,
+                    datasets: [
+                        {
+                            label: 'Adds',
+                            data: operationsData.adds,
+                            borderColor: '#7E57C2',
+                            backgroundColor: 'rgba(126, 87, 194, 0.1)',
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Searches',
+                            data: operationsData.searches,
+                            borderColor: '#FFA000',
+                            backgroundColor: 'rgba(255, 160, 0, 0.1)',
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Deletes',
+                            data: operationsData.deletes,
+                            borderColor: '#E57373',
+                            backgroundColor: 'rgba(229, 115, 115, 0.1)',
+                            tension: 0.4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+            
+            const memoryCtx = document.getElementById('memory-chart').getContext('2d');
+            memoryChart = new Chart(memoryCtx, {
+                type: 'line',
+                data: {
+                    labels: memoryData.labels,
+                    datasets: [
+                        {
+                            label: 'Memory Usage (MB)',
+                            data: memoryData.values,
+                            borderColor: '#26A69A',
+                            backgroundColor: 'rgba(38, 166, 154, 0.1)',
+                            tension: 0.4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Format bytes to human-readable format
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+        
+        // Format time to human-readable format
+        function formatTime(ms) {
+            if (ms < 1) {
+                return (ms * 1000).toFixed(2) + ' µs';
+            } else if (ms < 1000) {
+                return ms.toFixed(2) + ' ms';
+            } else {
+                return (ms / 1000).toFixed(2) + ' s';
+            }
+        }
+        
+        // Update dashboard with new metrics
+        function updateDashboard() {
+            // Update timestamp
+            document.getElementById('last-updated').textContent = new Date().toISOString();
+            
+            // Fetch metrics
+            fetch('/dashboard/metrics')
+                .then(response => response.json())
+                .then(metrics => {
+                    // Update summary metrics
+                    document.getElementById('vector-count').textContent = metrics.vector_count || 0;
+                    document.getElementById('memory-usage').textContent = formatBytes(metrics.memory_usage || 0);
+                    document.getElementById('query-latency').textContent = formatTime(metrics.avg_search_time || 0);
+                    
+                    // Update metrics table
+                    const metricsTable = document.getElementById('metrics-table').getElementsByTagName('tbody')[0];
+                    metricsTable.innerHTML = '';
+                    
+                    Object.entries(metrics).sort().forEach(([key, value]) => {
+                        const row = metricsTable.insertRow();
+                        const keyCell = row.insertCell(0);
+                        const valueCell = row.insertCell(1);
+                        
+                        keyCell.textContent = key;
+                        
+                        // Format value based on key
+                        if (key.includes('time') && typeof value === 'number') {
+                            valueCell.textContent = formatTime(value);
+                        } else if ((key.includes('memory') || key.includes('size')) && typeof value === 'number') {
+                            valueCell.textContent = formatBytes(value);
+                        } else {
+                            valueCell.textContent = value;
+                        }
+                    });
+                    
+                    // Update charts data
+                    const now = new Date().toLocaleTimeString();
+                    
+                    // Operations chart
+                    operationsData.labels.push(now);
+                    operationsData.adds.push(metrics.add_count || 0);
+                    operationsData.searches.push(metrics.search_count || 0);
+                    operationsData.deletes.push(metrics.delete_count || 0);
+                    
+                    // Keep only the last 10 data points
+                    if (operationsData.labels.length > 10) {
+                        operationsData.labels.shift();
+                        operationsData.adds.shift();
+                        operationsData.searches.shift();
+                        operationsData.deletes.shift();
+                    }
+                    
+                    // Memory chart
+                    memoryData.labels.push(now);
+                    memoryData.values.push((metrics.memory_usage || 0) / (1024 * 1024)); // Convert to MB
+                    
+                    // Keep only the last 10 data points
+                    if (memoryData.labels.length > 10) {
+                        memoryData.labels.shift();
+                        memoryData.values.shift();
+                    }
+                    
+                    // Update charts
+                    operationsChart.data.labels = operationsData.labels;
+                    operationsChart.data.datasets[0].data = operationsData.adds;
+                    operationsChart.data.datasets[1].data = operationsData.searches;
+                    operationsChart.data.datasets[2].data = operationsData.deletes;
+                    operationsChart.update();
+                    
+                    memoryChart.data.labels = memoryData.labels;
+                    memoryChart.data.datasets[0].data = memoryData.values;
+                    memoryChart.update();
+                })
+                .catch(error => console.error('Error fetching metrics:', error));
+            
+            // Fetch health status
+            fetch('/dashboard/health')
+                .then(response => response.json())
+                .then(health => {
+                    const statusElement = document.getElementById('health-status');
+                    const messageElement = document.getElementById('health-message');
+                    
+                    if (health.status === 'healthy') {
+                        statusElement.textContent = '✅';
+                        statusElement.className = 'metric-value status-healthy';
+                    } else {
+                        statusElement.textContent = '❌';
+                        statusElement.className = 'metric-value status-unhealthy';
+                    }
+                    
+                    messageElement.textContent = health.message;
+                })
+                .catch(error => {
+                    console.error('Error fetching health status:', error);
+                    const statusElement = document.getElementById('health-status');
+                    const messageElement = document.getElementById('health-message');
+                    
+                    statusElement.textContent = '❓';
+                    statusElement.className = 'metric-value';
+                    messageElement.textContent = 'Failed to fetch health status';
+                });
+        }
+        
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            initCharts();
+            updateDashboard();
+            
+            // Set up auto-refresh
+            const refreshIntervalSeconds = parseInt("{{ .RefreshInterval }}");
+            setInterval(updateDashboard, refreshIntervalSeconds * 1000);
+        });
+    </script>
+</body>
+</html> 
