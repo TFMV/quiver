@@ -1,7 +1,6 @@
 package quiver
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/bytedance/sonic"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 )
@@ -177,8 +177,8 @@ func TestAppendFromArrow(t *testing.T) {
 
 	// Metadata column
 	metaBuilder := b.Field(2).(*array.StringBuilder)
-	meta1, _ := json.Marshal(map[string]interface{}{"name": "vector1", "category": "test"})
-	meta2, _ := json.Marshal(map[string]interface{}{"name": "vector2", "category": "test"})
+	meta1, _ := sonic.Marshal(map[string]interface{}{"name": "vector1", "category": "test"})
+	meta2, _ := sonic.Marshal(map[string]interface{}{"name": "vector2", "category": "test"})
 	metaBuilder.AppendValues([]string{string(meta1), string(meta2)}, nil)
 
 	// Build the record
@@ -278,16 +278,16 @@ func TestChangelogFeatures(t *testing.T) {
 	// We don't actually run the search but verify methods exist
 
 	// Verify method for faceted search exists
-	facetedResults, err := idx.FacetedSearch([]float32{0.1, 0.2, 0.3}, 5, map[string]string{"category": "test"})
+	facetedResults, _ := idx.FacetedSearch([]float32{0.1, 0.2, 0.3}, 5, map[string]string{"category": "test"})
 	// Might fail due to empty database, but method exists
 	assert.NotNil(t, facetedResults)
 
 	// Verify method for multi-vector search exists
-	multiResults, err := idx.MultiVectorSearch([][]float32{{0.1, 0.2, 0.3}}, 5)
+	multiResults, _ := idx.MultiVectorSearch([][]float32{{0.1, 0.2, 0.3}}, 5)
 	assert.NotNil(t, multiResults)
 
 	// Verify method for search with negatives exists
-	negResults, err := idx.SearchWithNegatives([]float32{0.1, 0.2, 0.3}, [][]float32{{0.4, 0.5, 0.6}}, 5, 1, 10)
+	negResults, _ := idx.SearchWithNegatives([]float32{0.1, 0.2, 0.3}, [][]float32{{0.4, 0.5, 0.6}}, 5, 1, 10)
 	assert.NotNil(t, negResults)
 }
 
@@ -431,26 +431,69 @@ func TestBackupRestore(t *testing.T) {
 	err = restoreIdx.Restore(backupDir)
 	assert.NoError(t, err)
 
+	// Safely get the length of the HNSW graph with locks
+	idx.lock.RLock()
+	originalLen := idx.hnsw.Len()
+	idx.lock.RUnlock()
+
+	restoreIdx.lock.RLock()
+	restoredLen := restoreIdx.hnsw.Len()
+	restoreIdx.lock.RUnlock()
+
 	// Verify the restored index has the same data
 	// 1. Check that the number of vectors is the same
-	assert.Equal(t, idx.hnsw.Len(), restoreIdx.hnsw.Len(), "Restored index should have the same number of vectors")
+	assert.Equal(t, originalLen, restoredLen, "Restored index should have the same number of vectors")
 
 	// 2. Check that metadata is restored correctly
 	for i := 1; i <= 20; i++ {
 		id := uint64(i)
+
+		// Safely access metadata with locks
+		idx.lock.RLock()
 		originalMeta := idx.metadata[id]
+		// Create a copy to avoid race conditions
+		originalMetaCopy := make(map[string]interface{})
+		for k, v := range originalMeta {
+			originalMetaCopy[k] = v
+		}
+		idx.lock.RUnlock()
+
+		restoreIdx.lock.RLock()
 		restoredMeta := restoreIdx.metadata[id]
-		assert.Equal(t, originalMeta["name"], restoredMeta["name"], "Metadata name should match for ID %d", id)
-		assert.Equal(t, originalMeta["value"], restoredMeta["value"], "Metadata value should match for ID %d", id)
-		assert.Equal(t, originalMeta["category"], restoredMeta["category"], "Metadata category should match for ID %d", id)
+		// Create a copy to avoid race conditions
+		restoredMetaCopy := make(map[string]interface{})
+		for k, v := range restoredMeta {
+			restoredMetaCopy[k] = v
+		}
+		restoreIdx.lock.RUnlock()
+
+		assert.Equal(t, originalMetaCopy["name"], restoredMetaCopy["name"], "Metadata name should match for ID %d", id)
+		assert.Equal(t, originalMetaCopy["value"], restoredMetaCopy["value"], "Metadata value should match for ID %d", id)
+		assert.Equal(t, originalMetaCopy["category"], restoredMetaCopy["category"], "Metadata category should match for ID %d", id)
 	}
 
 	// 3. Check that vectors are restored correctly
 	for i := 1; i <= 20; i++ {
 		id := uint64(i)
+
+		// Safely access vectors with locks
+		idx.lock.RLock()
 		originalVector := idx.vectors[id]
+		// Create a copy to avoid race conditions
+		originalVectorCopy := make([]float32, len(originalVector))
+		copy(originalVectorCopy, originalVector)
+		idx.lock.RUnlock()
+
+		restoreIdx.lock.RLock()
 		restoredVector := restoreIdx.vectors[id]
-		assert.Equal(t, originalVector, restoredVector, "Vector should match for ID %d", id)
+		// Create a copy to avoid race conditions
+		restoredVectorCopy := make([]float32, len(restoredVector))
+		if restoredVector != nil {
+			copy(restoredVectorCopy, restoredVector)
+		}
+		restoreIdx.lock.RUnlock()
+
+		assert.Equal(t, originalVectorCopy, restoredVectorCopy, "Vector should match for ID %d", id)
 	}
 
 	// 4. Perform the same search on the restored index and verify results are similar
