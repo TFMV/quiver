@@ -2,7 +2,9 @@ package dimreduce
 
 import (
 	"errors"
+	"fmt"
 	"math"
+	"math/rand"
 	"sync"
 
 	"go.uber.org/zap"
@@ -127,6 +129,18 @@ func (dr *DimReducer) Reduce(vectors [][]float32) ([][]float32, error) {
 		return nil, errors.New("input vector dimension is smaller than target dimension")
 	}
 
+	// Special case: If we have only one vector, we can't do PCA
+	// Just return a simple projection (take the first N dimensions)
+	if len(vectors) == 1 {
+		dr.logger.Warn("Only one vector provided, using simple projection instead of PCA")
+		result := make([][]float32, 1)
+		result[0] = make([]float32, dr.config.TargetDimension)
+		for i := 0; i < dr.config.TargetDimension; i++ {
+			result[0][i] = vectors[0][i]
+		}
+		return result, nil
+	}
+
 	// Convert [][]float32 to *mat.Dense
 	rows := len(vectors)
 	cols := inputDim
@@ -156,6 +170,16 @@ func (dr *DimReducer) Reduce(vectors [][]float32) ([][]float32, error) {
 func (dr *DimReducer) reducePCA(matrix *mat.Dense, rows, cols int) ([][]float32, error) {
 	targetDim := dr.config.TargetDimension
 
+	// Check if we have enough samples for PCA
+	if rows < 2 {
+		return nil, errors.New("at least 2 samples are required for PCA")
+	}
+
+	// Ensure target dimension is less than input dimension
+	if targetDim >= cols {
+		return nil, fmt.Errorf("target dimension (%d) must be less than input dimension (%d)", targetDim, cols)
+	}
+
 	// Center the data (subtract mean from each column)
 	centered := mat.NewDense(rows, cols, nil)
 	dr.pcaMean = make([]float64, cols)
@@ -170,21 +194,64 @@ func (dr *DimReducer) reducePCA(matrix *mat.Dense, rows, cols int) ([][]float32,
 		}
 	}
 
+	// Check for zero variance features
+	zeroVarianceFeatures := false
+	for j := 0; j < cols; j++ {
+		col := mat.Col(nil, j, centered)
+		variance := stat.Variance(col, nil)
+		if variance < 1e-10 {
+			zeroVarianceFeatures = true
+			// Add a small amount of noise to avoid numerical issues
+			for i := 0; i < rows; i++ {
+				noise := (rand.Float64() * 1e-5) - 5e-6
+				centered.Set(i, j, centered.At(i, j)+noise)
+			}
+		}
+	}
+
+	if zeroVarianceFeatures {
+		dr.logger.Warn("Found features with near-zero variance, adding small noise to improve numerical stability")
+	}
+
 	// Compute covariance matrix
 	var cov mat.SymDense
 	stat.CovarianceMatrix(&cov, centered, nil)
+
+	// Add a small regularization term to the diagonal to improve conditioning
+	for i := 0; i < cols; i++ {
+		cov.SetSym(i, i, cov.At(i, i)+1e-6)
+	}
 
 	// Perform eigendecomposition
 	var eigsym mat.EigenSym
 	ok := eigsym.Factorize(&cov, true)
 	if !ok {
-		return nil, errors.New("eigendecomposition failed")
+		// If factorization fails, try with more regularization
+		dr.logger.Warn("Initial eigendecomposition failed, trying with stronger regularization")
+		for i := 0; i < cols; i++ {
+			cov.SetSym(i, i, cov.At(i, i)+1e-4)
+		}
+
+		ok = eigsym.Factorize(&cov, true)
+		if !ok {
+			return nil, errors.New("eigendecomposition failed even with regularization")
+		}
 	}
 
 	// Get eigenvalues and eigenvectors
 	eigenvalues := eigsym.Values(nil)
 	var eigenvectors mat.Dense
 	eigsym.VectorsTo(&eigenvectors)
+
+	// Check for negative eigenvalues (numerical issues)
+	for i, val := range eigenvalues {
+		if val < 0 {
+			dr.logger.Warn("Found negative eigenvalue, setting to small positive value",
+				zap.Int("index", i),
+				zap.Float64("value", val))
+			eigenvalues[i] = 1e-10
+		}
+	}
 
 	// Sort eigenvalues and eigenvectors in descending order
 	indices := make([]int, len(eigenvalues))
@@ -220,6 +287,12 @@ func (dr *DimReducer) reducePCA(matrix *mat.Dense, rows, cols int) ([][]float32,
 	totalVariance := 0.0
 	for _, val := range sortedEigenvalues {
 		totalVariance += val
+	}
+
+	// Protect against division by zero
+	if totalVariance < 1e-10 {
+		dr.logger.Warn("Total variance is near zero, setting to small value to avoid division by zero")
+		totalVariance = 1e-10
 	}
 
 	explainedVarianceRatio := make([]float64, len(sortedEigenvalues))
