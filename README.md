@@ -497,12 +497,6 @@ Key observations:
 - Efficient memory usage with configurable parameters
 - Batch operations provide high throughput for bulk loading
 
-## Installation
-
-```bash
-go get github.com/TFMV/quiver
-```
-
 ## Documentation
 
 For comprehensive documentation, visit our [Documentation Site](https://tfmv.github.io/quiver/).

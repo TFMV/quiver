@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/TFMV/quiver"
-	"github.com/TFMV/quiver/extensions"
 	"github.com/TFMV/quiver/router"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
@@ -24,11 +23,10 @@ import (
 
 // Server holds the Fiber app instance
 type Server struct {
-	app     *fiber.App
-	log     *zap.Logger
-	port    string
-	index   *quiver.Index
-	manager *extensions.MultiIndexManager
+	app   *fiber.App
+	log   *zap.Logger
+	port  string
+	index *quiver.Index
 }
 
 // ServerOptions defines the configuration for the server.
@@ -108,21 +106,6 @@ func NewServer(opts ServerOptions, index *quiver.Index, logger *zap.Logger) *Ser
 		index: index,
 	}
 
-	// Create the multi-index manager if extensions are enabled
-	if opts.EnableExtensions {
-		manager, err := extensions.NewMultiIndexManager(opts.RouterConfig, logger)
-		if err != nil {
-			logger.Error("Failed to create multi-index manager", zap.Error(err))
-		} else {
-			server.manager = manager
-			// Register the main index with the manager
-			err = manager.RegisterIndex(router.GeneralIndex, index, nil)
-			if err != nil {
-				logger.Error("Failed to register main index with manager", zap.Error(err))
-			}
-		}
-	}
-
 	// Routes
 	app.Get("/health", healthCheckHandler(logger))
 	app.Get("/health/live", livenessHandler)
@@ -150,16 +133,6 @@ func NewServer(opts ServerOptions, index *quiver.Index, logger *zap.Logger) *Ser
 	// Index operations
 	v1.Post("/index/backup", backupHandler(index, logger))
 	v1.Post("/index/restore", restoreHandler(index, logger))
-
-	// Add dimensionality reduction endpoint if enabled
-	if index.Config().EnableDimReduction {
-		v1.Post("/reduce", reduceVectorsHandler(index, logger))
-	}
-
-	// Register extension routes if enabled
-	if opts.EnableExtensions && server.manager != nil {
-		logger.Warn("Extension routes registration is disabled")
-	}
 
 	// Add custom logging middleware
 	app.Use(customLoggingMiddleware(logger))
@@ -813,44 +786,6 @@ func createIndexHandler(logger *zap.Logger) fiber.Handler {
 			"success": true,
 			"message": "Index created successfully",
 			"config":  config,
-		})
-	}
-}
-
-// reduceVectorsHandler reduces the dimensionality of vectors
-func reduceVectorsHandler(idx *quiver.Index, logger *zap.Logger) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		var req struct {
-			Vectors [][]float32 `json:"vectors"`
-		}
-		if err := c.BodyParser(&req); err != nil {
-			logger.Error("Failed to parse request", zap.Error(err))
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error":   true,
-				"message": "Invalid request format",
-			})
-		}
-
-		if len(req.Vectors) == 0 {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error":   true,
-				"message": "No vectors provided",
-			})
-		}
-
-		// Reduce the vectors
-		reducedVectors, err := idx.ReduceVectors(req.Vectors)
-		if err != nil {
-			logger.Error("Failed to reduce vectors", zap.Error(err))
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error":   true,
-				"message": "Failed to reduce vectors: " + err.Error(),
-			})
-		}
-
-		return c.JSON(fiber.Map{
-			"success": true,
-			"vectors": reducedVectors,
 		})
 	}
 }

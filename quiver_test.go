@@ -3,6 +3,7 @@ package quiver
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -17,14 +18,7 @@ var testLogger *zap.Logger
 
 func init() {
 	// Initialize test logger with a proper configuration
-	config := zap.NewDevelopmentConfig()
-	config.DisableCaller = true
-	config.DisableStacktrace = true
-	logger, err := config.Build()
-	if err != nil {
-		panic(fmt.Sprintf("Failed to initialize test logger: %v", err))
-	}
-	testLogger = logger
+	testLogger = zap.NewNop()
 }
 
 // TestNewIndex tests creating a new index
@@ -358,4 +352,285 @@ func TestSearchWithNegatives(t *testing.T) {
 	assert.True(t, groupAFound, "Group A vectors should be in results")
 	// We don't strictly require Group B to be found, but we track it for debugging
 	t.Logf("Group B vectors found in results: %v", groupBFound)
+}
+
+// TestBackupRestore tests the backup and restore functionality
+func TestBackupRestore(t *testing.T) {
+	tmp := t.TempDir()
+	config := Config{
+		Dimension:       3,
+		StoragePath:     filepath.Join(tmp, "test.db"),
+		MaxElements:     1000,
+		HNSWM:           32,
+		HNSWEfConstruct: 200,
+		HNSWEfSearch:    100,
+		BatchSize:       10,
+	}
+
+	// Create a new index
+	idx, err := New(config, testLogger)
+	assert.NoError(t, err)
+
+	// Add some vectors
+	for i := 1; i <= 20; i++ {
+		vector := []float32{float32(i) * 0.1, float32(i) * 0.2, float32(i) * 0.3}
+		meta := map[string]interface{}{
+			"name":     fmt.Sprintf("test-%d", i),
+			"value":    i,
+			"category": "test", // Add the required category field
+		}
+		err := idx.Add(uint64(i), vector, meta)
+		assert.NoError(t, err)
+	}
+
+	// Force flush the batch
+	err = idx.flushBatch()
+	assert.NoError(t, err)
+
+	// Create a backup
+	backupDir := filepath.Join(tmp, "backup")
+	err = idx.Backup(backupDir, false, false)
+	assert.NoError(t, err)
+
+	// Verify backup files exist
+	_, err = os.Stat(filepath.Join(backupDir, "index.hnsw"))
+	assert.NoError(t, err)
+	_, err = os.Stat(filepath.Join(backupDir, "metadata.json"))
+	assert.NoError(t, err)
+	_, err = os.Stat(filepath.Join(backupDir, "manifest.json"))
+	assert.NoError(t, err)
+	_, err = os.Stat(filepath.Join(backupDir, "backup.json"))
+	assert.NoError(t, err)
+
+	// Create a new index for restore
+	restoreConfig := Config{
+		Dimension:       3,
+		StoragePath:     filepath.Join(tmp, "restore.db"),
+		MaxElements:     1000,
+		HNSWM:           32,
+		HNSWEfConstruct: 200,
+		HNSWEfSearch:    100,
+		BatchSize:       10,
+	}
+
+	restoreIdx, err := New(restoreConfig, testLogger)
+	assert.NoError(t, err)
+
+	// Restore from backup
+	err = restoreIdx.Restore(filepath.Join(backupDir, "backup.json"))
+	assert.NoError(t, err)
+
+	// Verify the restored index has the same data
+	// This would require implementing a method to compare indices
+	// For now, we just check that the restore operation completed without errors
+}
+
+// TestAddWithImmediateFlush tests that the Add method performs an immediate flush when the batch buffer is full
+func TestAddWithImmediateFlush(t *testing.T) {
+	tmp := t.TempDir()
+	config := Config{
+		Dimension:       3,
+		StoragePath:     filepath.Join(tmp, "test.db"),
+		MaxElements:     1000,
+		HNSWM:           32,
+		HNSWEfConstruct: 200,
+		HNSWEfSearch:    100,
+		BatchSize:       5, // Small batch size for testing
+	}
+
+	// Create a new index
+	idx, err := New(config, testLogger)
+	assert.NoError(t, err)
+
+	// Add vectors up to batch size
+	for i := 1; i <= 4; i++ {
+		vector := []float32{float32(i) * 0.1, float32(i) * 0.2, float32(i) * 0.3}
+		meta := map[string]interface{}{
+			"name":     fmt.Sprintf("test-%d", i),
+			"value":    i,
+			"category": "test",
+		}
+		err := idx.Add(uint64(i), vector, meta)
+		assert.NoError(t, err)
+	}
+
+	// At this point, the batch buffer should have 4 items
+
+	// Add one more vector to trigger the flush
+	vector := []float32{0.5, 0.6, 0.7}
+	meta := map[string]interface{}{
+		"name":     "test-5",
+		"value":    5,
+		"category": "test",
+	}
+	err = idx.Add(uint64(5), vector, meta)
+	assert.NoError(t, err)
+
+	// Give the goroutine a moment to execute
+	time.Sleep(100 * time.Millisecond)
+
+	// Now search for the vectors to verify they were added to the index
+	results, err := idx.Search(vector, 5, 1, 10)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, results, "Search should return results after flush")
+}
+
+// TestDeleteVector tests that the DeleteVector function properly removes entries from all relevant maps
+func TestDeleteVector(t *testing.T) {
+	tmp := t.TempDir()
+	config := Config{
+		Dimension:       3,
+		StoragePath:     filepath.Join(tmp, "test.db"),
+		MaxElements:     1000,
+		HNSWM:           32,
+		HNSWEfConstruct: 200,
+		HNSWEfSearch:    100,
+		BatchSize:       5,
+	}
+
+	// Create a new index
+	idx, err := New(config, testLogger)
+	assert.NoError(t, err)
+
+	// Add a vector
+	vector := []float32{0.1, 0.2, 0.3}
+	meta := map[string]interface{}{
+		"name":     "test-1",
+		"value":    1,
+		"category": "test",
+	}
+	err = idx.Add(uint64(1), vector, meta)
+	assert.NoError(t, err)
+
+	// Force flush the batch
+	err = idx.flushBatch()
+	assert.NoError(t, err)
+
+	// Verify the vector exists in all maps
+	_, vectorExists := idx.vectors[1]
+	assert.True(t, vectorExists, "Vector should exist in vectors map")
+
+	_, metadataExists := idx.metadata[1]
+	assert.True(t, metadataExists, "Vector should exist in metadata map")
+
+	_, cacheExists := idx.cache.Load(uint64(1))
+	assert.True(t, cacheExists, "Vector should exist in cache")
+
+	// Verify the vector exists in the database
+	if idx.dbConn != nil {
+		results, err := idx.QueryMetadata("SELECT * FROM metadata WHERE id = 1")
+		assert.NoError(t, err)
+		assert.Len(t, results, 1, "Vector should exist in database")
+	}
+
+	// Delete the vector
+	err = idx.DeleteVector(uint64(1))
+	assert.NoError(t, err)
+
+	// Verify the vector is removed from all maps
+	_, vectorExists = idx.vectors[1]
+	assert.False(t, vectorExists, "Vector should be removed from vectors map")
+
+	_, metadataExists = idx.metadata[1]
+	assert.False(t, metadataExists, "Vector should be removed from metadata map")
+
+	_, cacheExists = idx.cache.Load(uint64(1))
+	assert.False(t, cacheExists, "Vector should be removed from cache")
+
+	// Verify the vector is removed from the database
+	if idx.dbConn != nil {
+		results, err := idx.QueryMetadata("SELECT * FROM metadata WHERE id = 1")
+		assert.NoError(t, err)
+		assert.Len(t, results, 0, "Vector should be removed from database")
+	}
+}
+
+// TestDeleteVectors tests that the DeleteVectors function properly removes entries from all relevant maps
+func TestDeleteVectors(t *testing.T) {
+	tmp := t.TempDir()
+	config := Config{
+		Dimension:       3,
+		StoragePath:     filepath.Join(tmp, "test.db"),
+		MaxElements:     1000,
+		HNSWM:           32,
+		HNSWEfConstruct: 200,
+		HNSWEfSearch:    100,
+		BatchSize:       5,
+	}
+
+	// Create a new index
+	idx, err := New(config, testLogger)
+	assert.NoError(t, err)
+
+	// Add multiple vectors
+	for i := 1; i <= 3; i++ {
+		vector := []float32{float32(i) * 0.1, float32(i) * 0.2, float32(i) * 0.3}
+		meta := map[string]interface{}{
+			"name":     fmt.Sprintf("test-%d", i),
+			"value":    i,
+			"category": "test",
+		}
+		err = idx.Add(uint64(i), vector, meta)
+		assert.NoError(t, err)
+	}
+
+	// Force flush the batch
+	err = idx.flushBatch()
+	assert.NoError(t, err)
+
+	// Verify the vectors exist in all maps
+	for i := 1; i <= 3; i++ {
+		_, vectorExists := idx.vectors[uint64(i)]
+		assert.True(t, vectorExists, "Vector %d should exist in vectors map", i)
+
+		_, metadataExists := idx.metadata[uint64(i)]
+		assert.True(t, metadataExists, "Vector %d should exist in metadata map", i)
+
+		_, cacheExists := idx.cache.Load(uint64(i))
+		assert.True(t, cacheExists, "Vector %d should exist in cache", i)
+	}
+
+	// Verify the vectors exist in the database
+	if idx.dbConn != nil {
+		results, err := idx.QueryMetadata("SELECT * FROM metadata WHERE id IN (1, 2, 3)")
+		assert.NoError(t, err)
+		assert.Len(t, results, 3, "All vectors should exist in database")
+	}
+
+	// Delete vectors with IDs 1 and 3
+	err = idx.DeleteVectors([]uint64{1, 3})
+	assert.NoError(t, err)
+
+	// Verify vectors 1 and 3 are removed from all maps
+	for _, id := range []uint64{1, 3} {
+		_, vectorExists := idx.vectors[id]
+		assert.False(t, vectorExists, "Vector %d should be removed from vectors map", id)
+
+		_, metadataExists := idx.metadata[id]
+		assert.False(t, metadataExists, "Vector %d should be removed from metadata map", id)
+
+		_, cacheExists := idx.cache.Load(id)
+		assert.False(t, cacheExists, "Vector %d should be removed from cache", id)
+	}
+
+	// Verify vector 2 still exists in all maps
+	_, vectorExists := idx.vectors[uint64(2)]
+	assert.True(t, vectorExists, "Vector 2 should still exist in vectors map")
+
+	_, metadataExists := idx.metadata[uint64(2)]
+	assert.True(t, metadataExists, "Vector 2 should still exist in metadata map")
+
+	_, cacheExists := idx.cache.Load(uint64(2))
+	assert.True(t, cacheExists, "Vector 2 should still exist in cache")
+
+	// Verify vectors 1 and 3 are removed from the database and vector 2 still exists
+	if idx.dbConn != nil {
+		results, err := idx.QueryMetadata("SELECT * FROM metadata WHERE id IN (1, 3)")
+		assert.NoError(t, err)
+		assert.Len(t, results, 0, "Vectors 1 and 3 should be removed from database")
+
+		results, err = idx.QueryMetadata("SELECT * FROM metadata WHERE id = 2")
+		assert.NoError(t, err)
+		assert.Len(t, results, 1, "Vector 2 should still exist in database")
+	}
 }
