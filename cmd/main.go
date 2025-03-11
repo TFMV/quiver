@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/TFMV/quiver"
 	"github.com/TFMV/quiver/api"
+	"github.com/bytedance/sonic"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -219,7 +219,7 @@ var validateCmd = &cobra.Command{
 		}
 
 		var config quiver.Config
-		if err := json.Unmarshal(data, &config); err != nil {
+		if err := sonic.Unmarshal(data, &config); err != nil {
 			logger.Fatal("Failed to parse config file", zap.Error(err))
 		}
 
@@ -258,7 +258,7 @@ var exportCmd = &cobra.Command{
 		}
 
 		// Write to file
-		data, err := json.MarshalIndent(results, "", "  ")
+		data, err := sonic.MarshalIndent(results, "", "  ")
 		if err != nil {
 			logger.Fatal("Failed to marshal metadata", zap.Error(err))
 		}
@@ -292,7 +292,7 @@ var importCmd = &cobra.Command{
 		}
 
 		var records []map[string]interface{}
-		if err := json.Unmarshal(data, &records); err != nil {
+		if err := sonic.Unmarshal(data, &records); err != nil {
 			logger.Fatal("Failed to parse input file", zap.Error(err))
 		}
 

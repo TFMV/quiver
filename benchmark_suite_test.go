@@ -1,7 +1,6 @@
 package quiver
 
 import (
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/bytedance/sonic"
 	"go.uber.org/zap"
 )
 
@@ -378,7 +378,7 @@ func BenchmarkBatchAppendFromArrow(b *testing.B) {
 				metadataCache := make([]string, 100)
 				for i := 0; i < 100; i++ {
 					metadata := generateRandomMetadata(uint64(i))
-					metaJSON, err := json.Marshal(metadata)
+					metaJSON, err := sonic.Marshal(metadata)
 					if err != nil {
 						b.Fatalf("Failed to marshal metadata: %v", err)
 					}
@@ -550,9 +550,4 @@ func BenchmarkSearchWithFilter(b *testing.B) {
 func BenchmarkComprehensive(b *testing.B) {
 	// Skip this benchmark for now as it needs more work
 	b.Skip("BenchmarkComprehensive needs further implementation")
-}
-
-func init() {
-	// Seed the random number generator
-	rand.Seed(time.Now().UnixNano())
 }
