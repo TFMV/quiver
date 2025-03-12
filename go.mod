@@ -3,10 +3,10 @@ module github.com/TFMV/quiver
 go 1.24
 
 require (
+	github.com/TFMV/hnsw v0.0.0-20250312015157-0a29d9790caf
 	github.com/apache/arrow-adbc/go/adbc v1.5.0
 	github.com/apache/arrow-go/v18 v18.1.1-0.20250116162745-f533d2066dee
 	github.com/bytedance/sonic v1.13.1
-	github.com/coder/hnsw v0.6.1
 	github.com/gofiber/fiber/v2 v2.52.6
 	github.com/google/uuid v1.6.0
 	github.com/olekukonko/tablewriter v0.0.5

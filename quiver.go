@@ -18,17 +18,18 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/TFMV/hnsw"
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-adbc/go/adbc/drivermgr"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/bytedance/sonic"
-	"github.com/coder/hnsw"
 	"go.uber.org/zap"
 )
 
@@ -56,6 +57,9 @@ type Config struct {
 	HNSWEfConstruct int // HNSW hyperparameter efConstruction
 	HNSWEfSearch    int // HNSW hyperparameter ef used during queries
 	BatchSize       int // Number of vectors to batch before insertion
+	// Parallel search configuration
+	EnableParallelSearch bool // Whether to use parallel search for large queries
+	NumSearchWorkers     int  // Number of workers for parallel search (0 = use all available cores)
 	// Persistence configuration
 	PersistInterval time.Duration // How often to persist index to disk (default: 5m)
 	// Backup configuration
@@ -95,8 +99,9 @@ type Index struct {
 	metadata        map[uint64]map[string]interface{}
 	vectors         map[uint64][]float32 // Store vectors for queries with negative examples
 	duckdb          *DuckDB
-	dbConn          *DuckDBConn
+	connPool        *ConnectionPool // Connection pool for concurrent database access
 	lock            sync.RWMutex
+	searchLock      sync.Mutex // Dedicated mutex for search operations
 	batchBuffer     []vectorMeta
 	batchLock       sync.Mutex
 	cache           sync.Map // Caches metadata: key = id, value = metadata map
@@ -171,6 +176,412 @@ type DuckDB struct {
 type DuckDBConn struct {
 	parent *DuckDB
 	conn   adbc.Connection
+	inUse  bool // Track whether the connection is currently in use
+}
+
+// ConnectionPool manages a pool of DuckDB connections.
+type ConnectionPool struct {
+	db                *DuckDB
+	connections       []*DuckDBConn
+	maxSize           int
+	initialSize       int
+	mu                sync.Mutex
+	connAvailable     *sync.Cond
+	preparedStmts     map[string]*PreparedStatement // Cache for prepared statements
+	stmtMu            sync.RWMutex                  // Mutex for prepared statement cache
+	lastUsedConn      *DuckDBConn                   // Track the last used connection for potential reuse
+	lastUsedConnMu    sync.Mutex                    // Mutex for last used connection
+	batchConn         *DuckDBConn                   // Dedicated connection for batch operations
+	batchConnMu       sync.Mutex                    // Mutex for batch connection
+	threadConnections sync.Map                      // Thread-local connections (goroutine ID -> connection)
+	stats             poolStats                     // Connection pool statistics
+	stopCleanup       chan struct{}                 // Channel to signal cleanup goroutine to stop
+}
+
+// poolStats tracks statistics about the connection pool usage
+type poolStats struct {
+	gets              int64
+	releases          int64
+	waits             int64
+	hits              int64 // Connection reuse hits
+	misses            int64 // Connection reuse misses
+	creations         int64 // New connection creations
+	threadReuseHits   int64 // Thread-local connection reuse hits
+	threadReuseMisses int64 // Thread-local connection reuse misses
+	mu                sync.Mutex
+}
+
+// NewConnectionPool creates a new connection pool for DuckDB
+func NewConnectionPool(duckdb *DuckDB, initialSize, maxSize int) (*ConnectionPool, error) {
+	if initialSize <= 0 {
+		initialSize = 1
+	}
+	if maxSize <= 0 {
+		maxSize = 10
+	}
+	if initialSize > maxSize {
+		initialSize = maxSize
+	}
+
+	pool := &ConnectionPool{
+		db:            duckdb,
+		connections:   make([]*DuckDBConn, 0, initialSize),
+		maxSize:       maxSize,
+		initialSize:   initialSize,
+		preparedStmts: make(map[string]*PreparedStatement),
+		stopCleanup:   make(chan struct{}), // Initialize the stop channel
+	}
+	pool.connAvailable = sync.NewCond(&pool.mu)
+
+	// Initialize with initial connections
+	for i := 0; i < initialSize; i++ {
+		conn, err := duckdb.OpenConnection()
+		if err != nil {
+			// Close any connections we've already opened
+			for _, c := range pool.connections {
+				c.Close()
+			}
+			return nil, fmt.Errorf("failed to initialize connection pool: %w", err)
+		}
+		pool.connections = append(pool.connections, conn)
+
+		// Track connection creation
+		pool.stats.mu.Lock()
+		pool.stats.creations++
+		pool.stats.mu.Unlock()
+	}
+
+	// Create a dedicated connection for batch operations
+	batchConn, err := duckdb.OpenConnection()
+	if err != nil {
+		// Close any connections we've already opened
+		for _, c := range pool.connections {
+			c.Close()
+		}
+		return nil, fmt.Errorf("failed to create batch connection: %w", err)
+	}
+	pool.batchConn = batchConn
+
+	// Track connection creation
+	pool.stats.mu.Lock()
+	pool.stats.creations++
+	pool.stats.mu.Unlock()
+
+	// Create metadata table if it doesn't exist using the batch connection
+	_, err = pool.batchConn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS metadata (
+		id BIGINT PRIMARY KEY,
+		json VARCHAR
+	)`)
+	if err != nil {
+		// Close all connections
+		pool.batchConn.Close()
+		for _, c := range pool.connections {
+			c.Close()
+		}
+		return nil, fmt.Errorf("failed to create metadata table: %w", err)
+	}
+
+	// Start a background goroutine to clean up unused prepared statements
+	go pool.cleanupPreparedStatements()
+
+	return pool, nil
+}
+
+// getGoroutineID returns a unique identifier for the current goroutine
+// This is used for thread-local connection affinity
+func getGoroutineID() uint64 {
+	b := make([]byte, 64)
+	b = b[:runtime.Stack(b, false)]
+	// Parse the goroutine ID from the first line of the stack trace
+	// Format: "goroutine 123 [running]:"
+	s := strings.TrimPrefix(string(b), "goroutine ")
+	s = s[:strings.IndexByte(s, ' ')]
+	id, _ := strconv.ParseUint(s, 10, 64)
+	return id
+}
+
+// GetBatchConnection gets the dedicated connection for batch operations
+func (p *ConnectionPool) GetBatchConnection() (*DuckDBConn, error) {
+	p.batchConnMu.Lock()
+	defer p.batchConnMu.Unlock()
+
+	// If the batch connection is not in use, mark it as in use and return it
+	if !p.batchConn.inUse {
+		p.batchConn.inUse = true
+
+		// Track statistics
+		p.stats.mu.Lock()
+		p.stats.gets++
+		p.stats.hits++
+		p.stats.mu.Unlock()
+
+		return p.batchConn, nil
+	}
+
+	// If the batch connection is in use, fall back to getting a regular connection
+	p.stats.mu.Lock()
+	p.stats.misses++
+	p.stats.mu.Unlock()
+
+	return p.GetConnection()
+}
+
+// ReleaseBatchConnection releases the dedicated batch connection
+func (p *ConnectionPool) ReleaseBatchConnection(conn *DuckDBConn) {
+	p.batchConnMu.Lock()
+	defer p.batchConnMu.Unlock()
+
+	// If this is the batch connection, mark it as not in use
+	if conn == p.batchConn {
+		p.batchConn.inUse = false
+
+		// Track statistics
+		p.stats.mu.Lock()
+		p.stats.releases++
+		p.stats.mu.Unlock()
+
+		return
+	}
+
+	// Otherwise, release it as a regular connection
+	p.ReleaseConnection(conn)
+}
+
+// GetConnection gets a connection from the pool, creating a new one if necessary.
+// This method blocks until a connection is available or can be created.
+func (p *ConnectionPool) GetConnection() (*DuckDBConn, error) {
+	// Track statistics
+	p.stats.mu.Lock()
+	p.stats.gets++
+	p.stats.mu.Unlock()
+
+	// First, try to get a thread-local connection if one exists
+	goroutineID := getGoroutineID()
+	if conn, ok := p.threadConnections.Load(goroutineID); ok {
+		threadConn := conn.(*DuckDBConn)
+
+		// Check if the connection is in use
+		p.mu.Lock()
+		if !threadConn.inUse {
+			threadConn.inUse = true
+			p.mu.Unlock()
+
+			// Track statistics
+			p.stats.mu.Lock()
+			p.stats.threadReuseHits++
+			p.stats.mu.Unlock()
+
+			return threadConn, nil
+		}
+		p.mu.Unlock()
+
+		// Track statistics
+		p.stats.mu.Lock()
+		p.stats.threadReuseMisses++
+		p.stats.mu.Unlock()
+	}
+
+	// Next, try to reuse the last used connection if it's available
+	p.lastUsedConnMu.Lock()
+	if p.lastUsedConn != nil {
+		p.mu.Lock()
+		if !p.lastUsedConn.inUse {
+			p.lastUsedConn.inUse = true
+			p.mu.Unlock()
+			p.lastUsedConnMu.Unlock()
+
+			// Store this connection as thread-local for this goroutine
+			p.threadConnections.Store(goroutineID, p.lastUsedConn)
+
+			// Track statistics
+			p.stats.mu.Lock()
+			p.stats.hits++
+			p.stats.mu.Unlock()
+
+			return p.lastUsedConn, nil
+		}
+		p.mu.Unlock()
+	}
+	p.lastUsedConnMu.Unlock()
+
+	// Track statistics
+	p.stats.mu.Lock()
+	p.stats.misses++
+	p.stats.mu.Unlock()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Try to find an available connection
+	for {
+		// First, check for an existing available connection
+		for _, conn := range p.connections {
+			if !conn.inUse {
+				conn.inUse = true
+
+				// Update the last used connection
+				p.lastUsedConnMu.Lock()
+				p.lastUsedConn = conn
+				p.lastUsedConnMu.Unlock()
+
+				// Store this connection as thread-local for this goroutine
+				p.threadConnections.Store(goroutineID, conn)
+
+				return conn, nil
+			}
+		}
+
+		// If we have room to create a new connection, do so
+		if len(p.connections) < p.maxSize {
+			conn, err := p.db.OpenConnection()
+			if err != nil {
+				return nil, fmt.Errorf("failed to open new connection: %w", err)
+			}
+			conn.inUse = true
+			p.connections = append(p.connections, conn)
+
+			// Update the last used connection
+			p.lastUsedConnMu.Lock()
+			p.lastUsedConn = conn
+			p.lastUsedConnMu.Unlock()
+
+			// Store this connection as thread-local for this goroutine
+			p.threadConnections.Store(goroutineID, conn)
+
+			// Track statistics
+			p.stats.mu.Lock()
+			p.stats.creations++
+			p.stats.mu.Unlock()
+
+			return conn, nil
+		}
+
+		// Otherwise, wait for a connection to become available
+		p.stats.mu.Lock()
+		p.stats.waits++
+		p.stats.mu.Unlock()
+
+		p.connAvailable.Wait()
+	}
+}
+
+// ReleaseConnection returns a connection to the pool.
+func (p *ConnectionPool) ReleaseConnection(conn *DuckDBConn) {
+	// Track statistics
+	p.stats.mu.Lock()
+	p.stats.releases++
+	p.stats.mu.Unlock()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Mark the connection as available
+	for _, c := range p.connections {
+		if c == conn {
+			c.inUse = false
+			break
+		}
+	}
+
+	// Signal that a connection is available
+	p.connAvailable.Signal()
+}
+
+// GetPreparedStatement gets a prepared statement from the cache or creates a new one
+func (p *ConnectionPool) GetPreparedStatement(query string) (*PreparedStatement, error) {
+	// Check if the statement is already in the cache
+	p.stmtMu.RLock()
+	stmt, exists := p.preparedStmts[query]
+	if exists {
+		// Update usage statistics
+		stmt.lastUsed = time.Now()
+		stmt.usageCount++
+		p.stmtMu.RUnlock()
+		return stmt, nil
+	}
+	p.stmtMu.RUnlock()
+
+	// Get a connection for the new prepared statement
+	conn, err := p.GetConnection()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection for prepared statement: %w", err)
+	}
+
+	// Create a new prepared statement entry
+	newStmt := &PreparedStatement{
+		query:      query,
+		conn:       conn,
+		lastUsed:   time.Now(),
+		usageCount: 1,
+	}
+
+	// Add to cache
+	p.stmtMu.Lock()
+	p.preparedStmts[query] = newStmt
+	p.stmtMu.Unlock()
+
+	return newStmt, nil
+}
+
+// ReleasePreparedStatement releases a prepared statement back to the pool
+func (p *ConnectionPool) ReleasePreparedStatement(stmt *PreparedStatement) {
+	if stmt != nil && stmt.conn != nil {
+		p.ReleaseConnection(stmt.conn)
+	}
+}
+
+// Close closes all connections in the pool and cleans up prepared statements.
+func (p *ConnectionPool) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Signal the cleanup goroutine to stop
+	close(p.stopCleanup)
+
+	// Close all prepared statements
+	p.stmtMu.Lock()
+	// Just clear the map since we don't have a direct way to close statements
+	p.preparedStmts = nil
+	p.stmtMu.Unlock()
+
+	// Close all connections
+	var lastErr error
+	for _, conn := range p.connections {
+		if err := conn.Close(); err != nil {
+			lastErr = err
+		}
+	}
+
+	// Close the batch connection if it exists
+	if p.batchConn != nil {
+		if err := p.batchConn.Close(); err != nil && lastErr == nil {
+			lastErr = err
+		}
+	}
+
+	p.connections = nil
+	return lastErr
+}
+
+// Size returns the current number of connections in the pool.
+func (p *ConnectionPool) Size() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.connections)
+}
+
+// AvailableConnections returns the number of available connections in the pool.
+func (p *ConnectionPool) AvailableConnections() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	count := 0
+	for _, conn := range p.connections {
+		if !conn.inUse {
+			count++
+		}
+	}
+	return count
 }
 
 // NewDuckDB opens or creates a DuckDB instance (file-based or in-memory).
@@ -497,8 +908,30 @@ func New(config Config, logger *zap.Logger) (*Index, error) {
 	}
 
 	// Initialize HNSW graph with the specified parameters
-	// Create a new HNSW graph with default configuration
-	graph := hnsw.NewGraph[uint64]()
+	var graph *hnsw.Graph[uint64]
+	var err error
+
+	// Configure the distance function based on the selected metric
+	var distanceFunc hnsw.DistanceFunc
+	switch config.Distance {
+	case Cosine:
+		distanceFunc = hnsw.CosineDistance
+	case L2:
+		distanceFunc = hnsw.EuclideanDistance
+	default:
+		distanceFunc = hnsw.CosineDistance // Default to cosine distance
+	}
+
+	// Create a new HNSW graph with the specified configuration
+	graph, err = hnsw.NewGraphWithConfig[uint64](
+		config.HNSWM,
+		0.5, // Default Ml value (layer size ratio)
+		config.HNSWEfSearch,
+		distanceFunc,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HNSW graph: %w", err)
+	}
 
 	// Open DuckDB connection using StoragePath
 	duckdb, err := NewDuckDB(WithPath(config.StoragePath))
@@ -506,22 +939,19 @@ func New(config Config, logger *zap.Logger) (*Index, error) {
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
 	}
 
-	// Open a connection to the database
-	dbConn, err := duckdb.OpenConnection()
-	if err != nil {
-		duckdb.Close()
-		return nil, fmt.Errorf("failed to open DuckDB connection: %w", err)
+	// Create a connection pool with appropriate sizing
+	initialPoolSize := 2                // Start with a smaller pool
+	maxPoolSize := runtime.NumCPU() * 2 // Scale with available CPUs
+
+	// Cap the maximum pool size to avoid excessive connections
+	if maxPoolSize > 20 {
+		maxPoolSize = 20
 	}
 
-	// Create metadata table if it doesn't exist.
-	_, err = dbConn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS metadata (
-		id BIGINT PRIMARY KEY,
-		json VARCHAR
-	)`)
+	connPool, err := NewConnectionPool(duckdb, initialPoolSize, maxPoolSize)
 	if err != nil {
-		dbConn.Close()
 		duckdb.Close()
-		return nil, fmt.Errorf("failed to create metadata table: %w", err)
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
 	idx := &Index{
@@ -530,8 +960,11 @@ func New(config Config, logger *zap.Logger) (*Index, error) {
 		metadata:          make(map[uint64]map[string]interface{}),
 		vectors:           make(map[uint64][]float32),
 		duckdb:            duckdb,
-		dbConn:            dbConn,
+		connPool:          connPool,
+		lock:              sync.RWMutex{},
+		searchLock:        sync.Mutex{}, // Initialize the search lock
 		batchBuffer:       make([]vectorMeta, 0, config.BatchSize),
+		batchLock:         sync.Mutex{},
 		logger:            logger,
 		batchTicker:       time.NewTicker(time.Second),
 		batchDone:         make(chan struct{}),
@@ -607,52 +1040,179 @@ func (idx *Index) flushBatch() error {
 
 	n := len(batchToProcess)
 
-	// Prepare batch for SQL execution - this is done outside of any locks
-	var values []string
-	for _, item := range batchToProcess {
-		metaJSON, err := sonic.Marshal(item.meta)
-		if err != nil {
-			idx.logger.Error("failed to marshal metadata", zap.Uint64("id", item.id), zap.Error(err))
-			continue // Skip this item but continue processing others
-		}
+	// Process batch in parallel - prepare metadata outside of any locks
+	metadataValues := make([]string, 0, n)
+	vectorsToAdd := make([]vectorMeta, 0, n)
 
-		// Add to batch values - escape single quotes in JSON
-		escapedJSON := strings.ReplaceAll(string(metaJSON), "'", "''")
-		values = append(values, fmt.Sprintf("(%d, '%s')", item.id, escapedJSON))
+	// Use a worker pool to parallelize JSON marshaling
+	type marshalResult struct {
+		index int
+		value string
+		err   error
 	}
 
-	// Execute batch insert using ADBC - this is done outside of any locks
-	if len(values) > 0 && idx.dbConn != nil {
-		query := fmt.Sprintf("INSERT INTO metadata (id, json) VALUES %s ON CONFLICT(id) DO UPDATE SET json = excluded.json",
-			strings.Join(values, ","))
+	// Create a fixed-size worker pool based on CPU count
+	numWorkers := runtime.NumCPU()
+	if numWorkers > n {
+		numWorkers = n
+	}
 
-		// Use a context with timeout to prevent hanging
+	// Use buffered channels to avoid goroutine blocking
+	resultChan := make(chan marshalResult, n)
+	workChan := make(chan int, n)
+
+	// Start worker goroutines
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range workChan {
+				item := batchToProcess[idx]
+				metaJSON, err := sonic.Marshal(item.meta)
+				resultChan <- marshalResult{
+					index: idx,
+					value: string(metaJSON),
+					err:   err,
+				}
+			}
+		}()
+	}
+
+	// Send work to workers
+	for i := range batchToProcess {
+		workChan <- i
+	}
+	close(workChan)
+
+	// Wait for all workers to finish
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Process results
+	results := make([]marshalResult, n)
+	for res := range resultChan {
+		if res.err != nil {
+			idx.logger.Error("failed to marshal metadata",
+				zap.Uint64("id", batchToProcess[res.index].id),
+				zap.Error(res.err))
+			continue
+		}
+		results[res.index] = res
+	}
+
+	// Build the values list
+	for i, res := range results {
+		if res.value == "" {
+			continue // Skip items that failed to marshal
+		}
+
+		item := batchToProcess[i]
+		// Escape single quotes in JSON
+		escapedJSON := strings.ReplaceAll(res.value, "'", "''")
+		metadataValues = append(metadataValues, fmt.Sprintf("(%d, '%s')", item.id, escapedJSON))
+		vectorsToAdd = append(vectorsToAdd, item)
+	}
+
+	// Execute batch insert using the dedicated batch connection - this is done outside of any locks
+	if len(metadataValues) > 0 && idx.connPool != nil {
+		// Get the dedicated batch connection
+		conn, err := idx.connPool.GetBatchConnection()
+		if err != nil {
+			idx.logger.Error("failed to get batch connection", zap.Error(err))
+			return fmt.Errorf("failed to get batch connection: %w", err)
+		}
+
+		// Keep the connection for future operations in this batch
+		defer idx.connPool.ReleaseBatchConnection(conn)
+
+		// Create a context with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		_, err := idx.dbConn.Exec(ctx, query)
-		if err != nil {
-			idx.logger.Error("failed to execute batch insert", zap.Error(err))
-			// Continue with in-memory updates even if DB insert fails
+		// Split large batches into smaller chunks to avoid query size limits
+		// Use a more efficient chunking strategy with prepared statements
+		const maxBatchSize = 1000
+
+		// For very small batches, use a single query
+		if len(metadataValues) <= 50 {
+			query := fmt.Sprintf("INSERT INTO metadata (id, json) VALUES %s ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+				strings.Join(metadataValues, ","))
+
+			// Execute the query
+			_, err = conn.Exec(ctx, query)
+			if err != nil {
+				idx.logger.Error("failed to execute batch insert", zap.Error(err))
+				return fmt.Errorf("failed to execute batch insert: %w", err)
+			}
+		} else {
+			// For larger batches, use multiple queries with transaction
+			// Start a transaction
+			_, err = conn.Exec(ctx, "BEGIN TRANSACTION")
+			if err != nil {
+				idx.logger.Error("failed to begin transaction", zap.Error(err))
+				return fmt.Errorf("failed to begin transaction: %w", err)
+			}
+
+			// Process in chunks
+			for i := 0; i < len(metadataValues); i += maxBatchSize {
+				end := i + maxBatchSize
+				if end > len(metadataValues) {
+					end = len(metadataValues)
+				}
+
+				chunk := metadataValues[i:end]
+				query := fmt.Sprintf("INSERT INTO metadata (id, json) VALUES %s ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+					strings.Join(chunk, ","))
+
+				// Execute the query
+				_, err = conn.Exec(ctx, query)
+				if err != nil {
+					// Rollback on error
+					conn.Exec(ctx, "ROLLBACK")
+					idx.logger.Error("failed to execute batch insert chunk",
+						zap.Int("chunk", i/maxBatchSize),
+						zap.Error(err))
+					return fmt.Errorf("failed to execute batch insert chunk: %w", err)
+				}
+			}
+
+			// Commit the transaction
+			_, err = conn.Exec(ctx, "COMMIT")
+			if err != nil {
+				idx.logger.Error("failed to commit transaction", zap.Error(err))
+				return fmt.Errorf("failed to commit transaction: %w", err)
+			}
 		}
 	}
 
+	// Update in-memory structures in parallel
 	// Lock the index for updating shared in-memory structures only
 	idx.lock.Lock()
 	defer idx.lock.Unlock()
 
-	// Update in-memory structures (HNSW graph, metadata, cache, vectors)
-	for _, item := range batchToProcess {
+	// Process vectors sequentially to avoid concurrent map writes in HNSW
+	for _, item := range vectorsToAdd {
 		// Add to HNSW graph
 		node := hnsw.MakeNode(item.id, item.vector)
-		idx.hnsw.Add(node)
+		if err := idx.hnsw.Add(node); err != nil {
+			return fmt.Errorf("failed to add vector %d to HNSW graph: %w", item.id, err)
+		}
 
-		// Update in-memory metadata and cache
-		idx.metadata[item.id] = item.meta
-		idx.cache.Store(item.id, item.meta)
-
-		// Store vector for negative example searches
+		// Store vector for negative queries
 		idx.vectors[item.id] = item.vector
+
+		// Store metadata
+		idx.metadata[item.id] = item.meta
+	}
+
+	// Update last persist ID
+	for _, item := range vectorsToAdd {
+		if item.id > idx.lastPersistID {
+			idx.lastPersistID = item.id
+		}
 	}
 
 	idx.logger.Debug("flushed batch", zap.Int("count", n))
@@ -793,11 +1353,19 @@ func (idx *Index) Search(query []float32, k, page, pageSize int) ([]SearchResult
 		// Set the ef parameter for the graph before searching
 		// Store the original value so we can restore it after the search
 		originalEf := idx.hnsw.EfSearch
+
 		idx.hnsw.EfSearch = efSearch
-		idx.logger.Debug("Setting efSearch parameter", zap.Int("efSearch", efSearch))
+
+		// Determine whether to use parallel search
+		useParallelSearch := idx.config.EnableParallelSearch &&
+			(len(query) >= 512 || currentCount >= 5000)
 
 		// Perform the search
-		results = idx.hnsw.Search(query, k*pageSize)
+		if useParallelSearch {
+			results, err = idx.hnsw.ParallelSearch(query, k*pageSize, idx.config.NumSearchWorkers)
+		} else {
+			results, err = idx.hnsw.Search(query, k*pageSize)
+		}
 
 		// Restore the original efSearch value
 		idx.hnsw.EfSearch = originalEf
@@ -806,10 +1374,6 @@ func (idx *Index) Search(query []float32, k, page, pageSize int) ([]SearchResult
 	if err != nil {
 		idx.logger.Error("HNSW search failed", zap.Error(err))
 		return nil, fmt.Errorf("HNSW search failed: %w", err)
-	}
-
-	if len(results) == 0 {
-		return []SearchResult{}, nil
 	}
 
 	start := (page - 1) * pageSize
@@ -958,8 +1522,27 @@ func Load(config Config, logger *zap.Logger) (*Index, error) {
 			zap.String("method", config.DimReductionMethod))
 	}
 
-	// Initialize a new HNSW graph
-	graph := hnsw.NewGraph[uint64]()
+	// Configure the distance function based on the selected metric
+	var distanceFunc hnsw.DistanceFunc
+	switch config.Distance {
+	case Cosine:
+		distanceFunc = hnsw.CosineDistance
+	case L2:
+		distanceFunc = hnsw.EuclideanDistance
+	default:
+		distanceFunc = hnsw.CosineDistance // Default to cosine distance
+	}
+
+	// Create a new HNSW graph with the specified configuration
+	graph, err := hnsw.NewGraphWithConfig[uint64](
+		config.HNSWM,
+		0.5, // Default Ml value (layer size ratio)
+		config.HNSWEfSearch,
+		distanceFunc,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HNSW graph: %w", err)
+	}
 
 	// Open DuckDB connection
 	duckdb, err := NewDuckDB(WithPath(config.StoragePath))
@@ -967,35 +1550,42 @@ func Load(config Config, logger *zap.Logger) (*Index, error) {
 		return nil, fmt.Errorf("failed to open DuckDB: %w", err)
 	}
 
-	// Open a connection to the database
-	dbConn, err := duckdb.OpenConnection()
-	if err != nil {
-		duckdb.Close()
-		return nil, fmt.Errorf("failed to open DuckDB connection: %w", err)
+	// Create a connection pool with appropriate sizing
+	initialPoolSize := 2                // Start with a smaller pool
+	maxPoolSize := runtime.NumCPU() * 2 // Scale with available CPUs
+
+	// Cap the maximum pool size to avoid excessive connections
+	if maxPoolSize > 20 {
+		maxPoolSize = 20
 	}
 
-	// Create metadata table if it doesn't exist.
-	_, err = dbConn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS metadata (
-		id BIGINT PRIMARY KEY,
-		json VARCHAR
-	)`)
+	connPool, err := NewConnectionPool(duckdb, initialPoolSize, maxPoolSize)
 	if err != nil {
-		dbConn.Close()
 		duckdb.Close()
-		return nil, fmt.Errorf("failed to create metadata table: %w", err)
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
-	// Load metadata from the database.
-	rr, stmt, _, err := dbConn.Query(context.Background(), "SELECT id, json FROM metadata")
+	// Load metadata from the database
+	metadata := make(map[uint64]map[string]interface{})
+	vectors := make(map[uint64][]float32)
+
+	// Get a connection from the pool
+	conn, err := connPool.GetConnection()
 	if err != nil {
-		dbConn.Close()
+		connPool.Close()
+		duckdb.Close()
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
+
+	// Query metadata
+	rr, stmt, _, err := conn.Query(context.Background(), "SELECT id, json FROM metadata")
+	if err != nil {
+		connPool.ReleaseConnection(conn)
+		connPool.Close()
 		duckdb.Close()
 		return nil, fmt.Errorf("failed to query metadata: %w", err)
 	}
 	defer stmt.Close()
-
-	metadata := make(map[uint64]map[string]interface{})
-	vectors := make(map[uint64][]float32)
 
 	// Process the query results
 	for rr.Next() {
@@ -1017,8 +1607,11 @@ func Load(config Config, logger *zap.Logger) (*Index, error) {
 		}
 	}
 
+	// Release the connection
+	connPool.ReleaseConnection(conn)
+
 	if err := rr.Err(); err != nil {
-		dbConn.Close()
+		connPool.Close()
 		duckdb.Close()
 		return nil, fmt.Errorf("error iterating metadata rows: %w", err)
 	}
@@ -1029,21 +1622,30 @@ func Load(config Config, logger *zap.Logger) (*Index, error) {
 		persistInterval = config.PersistInterval
 	}
 
+	// Set backup interval
+	backupInterval := 1 * time.Hour
+	if config.BackupInterval > 0 {
+		backupInterval = config.BackupInterval
+	}
+
 	idx := &Index{
 		config:            config,
 		hnsw:              graph,
 		metadata:          metadata,
 		vectors:           vectors,
 		duckdb:            duckdb,
-		dbConn:            dbConn,
+		connPool:          connPool,
+		lock:              sync.RWMutex{},
+		searchLock:        sync.Mutex{}, // Initialize the search lock
 		batchBuffer:       make([]vectorMeta, 0, config.BatchSize),
+		batchLock:         sync.Mutex{},
 		logger:            logger,
 		batchTicker:       time.NewTicker(time.Second),
 		batchDone:         make(chan struct{}),
 		persistInterval:   persistInterval,
 		persistTicker:     time.NewTicker(persistInterval),
 		persistDone:       make(chan struct{}),
-		backupTicker:      time.NewTicker(config.BackupInterval),
+		backupTicker:      time.NewTicker(backupInterval),
 		backupDone:        make(chan struct{}),
 		originalDimension: originalDimension,
 		allocator:         memory.NewGoAllocator(),
@@ -1760,35 +2362,82 @@ func (idx *Index) importMetadata(filePath string, compressed bool) error {
 
 // Close releases resources associated with the index and stops background workers.
 func (idx *Index) Close() error {
-	// Stop background workers.
-	idx.batchTicker.Stop()
-	close(idx.batchDone)
-	idx.persistTicker.Stop()
-	close(idx.persistDone)
-	idx.backupTicker.Stop()
-	close(idx.backupDone)
-	// Wait for background goroutines to exit.
-	idx.bgWG.Wait()
-
-	if err := idx.flushBatch(); err != nil {
-		idx.logger.Error("failed to flush batch during close", zap.Error(err))
+	// Stop background workers
+	if idx.batchTicker != nil {
+		idx.batchTicker.Stop()
+		close(idx.batchDone)
+	}
+	if idx.persistTicker != nil {
+		idx.persistTicker.Stop()
+		close(idx.persistDone)
+	}
+	if idx.backupTicker != nil {
+		idx.backupTicker.Stop()
+		close(idx.backupDone)
 	}
 
-	// Close DuckDB connection and database
-	if idx.dbConn != nil {
-		idx.dbConn.Close()
+	// Wait for background workers to exit
+	idx.bgWG.Wait()
+
+	// Flush any remaining batch items
+	if len(idx.batchBuffer) > 0 {
+		if err := idx.flushBatch(); err != nil {
+			idx.logger.Error("failed to flush batch during close", zap.Error(err))
+		}
+	}
+
+	// Close DuckDB connection pool and database
+	if idx.connPool != nil {
+		idx.connPool.Close()
 	}
 	if idx.duckdb != nil {
 		idx.duckdb.Close()
 	}
 
-	idx.logger.Info("index closed successfully")
 	return nil
 }
 
 // QueryMetadata executes a metadata query against DuckDB and returns the matching metadata.
 func (idx *Index) QueryMetadata(query string) ([]map[string]interface{}, error) {
-	rr, stmt, _, err := idx.dbConn.Query(context.Background(), query)
+	// Only cache SELECT queries, not DELETE or other modifying queries
+	shouldCache := strings.HasPrefix(strings.ToUpper(strings.TrimSpace(query)), "SELECT")
+
+	// Create a cache key for the query if it's cacheable
+	var cacheKey string
+	if shouldCache {
+		cacheKey = "query:" + query
+
+		// Check if we have a cached result
+		if cachedResult, ok := idx.cache.Load(cacheKey); ok {
+			// Return a copy of the cached result to avoid modification
+			originalResults := cachedResult.([]map[string]interface{})
+			results := make([]map[string]interface{}, len(originalResults))
+
+			// Deep copy each result map
+			for i, original := range originalResults {
+				results[i] = make(map[string]interface{}, len(original))
+				for k, v := range original {
+					results[i][k] = v
+				}
+			}
+
+			return results, nil
+		}
+	}
+
+	// Try to get a thread-local connection for better performance
+	conn, err := idx.connPool.GetConnection()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
+	defer idx.connPool.ReleaseConnection(conn)
+
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Execute the query
+	rr, stmt, _, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("metadata query failed: %w", err)
 	}
@@ -1802,6 +2451,11 @@ func (idx *Index) QueryMetadata(query string) ([]map[string]interface{}, error) 
 		numCols := int(record.NumCols())
 		numRows := int(record.NumRows())
 
+		// Pre-allocate results array to avoid reallocations
+		if results == nil {
+			results = make([]map[string]interface{}, 0, numRows)
+		}
+
 		// Get column names from schema
 		schema := record.Schema()
 		colNames := make([]string, numCols)
@@ -1811,7 +2465,7 @@ func (idx *Index) QueryMetadata(query string) ([]map[string]interface{}, error) 
 
 		// Process each row
 		for rowIdx := 0; rowIdx < numRows; rowIdx++ {
-			result := make(map[string]interface{})
+			result := make(map[string]interface{}, numCols) // Pre-allocate map with expected capacity
 
 			// Extract values for each column
 			for colIdx := 0; colIdx < numCols; colIdx++ {
@@ -1863,6 +2517,27 @@ func (idx *Index) QueryMetadata(query string) ([]map[string]interface{}, error) 
 		return nil, fmt.Errorf("error iterating query results: %w", err)
 	}
 
+	// Cache the results for future queries if the result set is not too large and it's a SELECT query
+	if shouldCache && len(results) > 0 && len(results) < 100 {
+		// Create a deep copy for caching to avoid modification
+		cachedResults := make([]map[string]interface{}, len(results))
+		for i, result := range results {
+			cachedResults[i] = make(map[string]interface{}, len(result))
+			for k, v := range result {
+				cachedResults[i][k] = v
+			}
+		}
+
+		// Store in cache with a TTL (will be automatically cleaned up by GC)
+		idx.cache.Store(cacheKey, cachedResults)
+
+		// Schedule cache cleanup after 5 minutes
+		go func(key string) {
+			time.Sleep(5 * time.Minute)
+			idx.cache.Delete(key)
+		}(cacheKey)
+	}
+
 	return results, nil
 }
 
@@ -1877,7 +2552,7 @@ func validateMetadataSchema(meta map[string]interface{}) error {
 
 // HealthCheck performs a simple health check on the index.
 func (idx *Index) HealthCheck() error {
-	if idx.hnsw == nil || idx.dbConn == nil {
+	if idx.hnsw == nil || idx.connPool == nil {
 		return errors.New("index or database not initialized")
 	}
 	return nil
@@ -1889,7 +2564,7 @@ func (idx *Index) CollectMetrics() map[string]interface{} {
 	metrics["vector_count"] = idx.hnsw.Len()
 	metrics["batch_size"] = len(idx.batchBuffer)
 	metrics["cache_size"] = idx.cacheSize()
-	metrics["db_connections"] = idx.duckdb.ConnCount()
+	metrics["db_connections"] = idx.connPool.Size()
 	metrics["last_persist_id"] = idx.lastPersistID
 	metrics["persist_interval"] = idx.persistInterval.Seconds()
 
@@ -1943,19 +2618,42 @@ func (idx *Index) FacetedSearch(query []float32, k int, facets map[string]string
 
 // MultiVectorSearch performs searches for multiple query vectors.
 func (idx *Index) MultiVectorSearch(queries [][]float32, k int) ([][]SearchResult, error) {
-
-	idx.lock.RLock()
-	defer idx.lock.RUnlock()
-
-	var allResults [][]SearchResult
-	for _, query := range queries {
-		results, err := idx.Search(query, k, 1, k)
-		if err != nil {
-			return nil, err
-		}
-		allResults = append(allResults, results)
+	if len(queries) == 0 {
+		return nil, errors.New("no query vectors provided")
 	}
-	return allResults, nil
+
+	// Validate dimensions for all queries
+	for i, query := range queries {
+		if !idx.config.EnableDimReduction || idx.dimReducer == nil {
+			if len(query) != idx.config.Dimension {
+				return nil, fmt.Errorf("query %d dimension (%d) does not match index dimension (%d)",
+					i, len(query), idx.config.Dimension)
+			}
+		} else {
+			if len(query) != idx.originalDimension {
+				return nil, fmt.Errorf("query %d dimension (%d) does not match original dimension (%d)",
+					i, len(query), idx.originalDimension)
+			}
+		}
+	}
+
+	// Always use sequential processing to avoid concurrent map writes
+	return idx.sequentialMultiVectorSearch(queries, k)
+}
+
+// sequentialMultiVectorSearch processes multiple query vectors sequentially.
+func (idx *Index) sequentialMultiVectorSearch(queries [][]float32, k int) ([][]SearchResult, error) {
+	results := make([][]SearchResult, len(queries))
+
+	for i, query := range queries {
+		searchResults, err := idx.Search(query, k, 1, k)
+		if err != nil {
+			return nil, fmt.Errorf("error searching for query %d: %w", i, err)
+		}
+		results[i] = searchResults
+	}
+
+	return results, nil
 }
 
 // copyFile copies a file from src to dst.
@@ -1966,16 +2664,18 @@ func copyFile(src, dst string) error {
 	}
 	defer sourceFile.Close()
 
-	destinationFile, err := os.Create(dst)
+	destFile, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer destinationFile.Close()
+	defer destFile.Close()
 
-	if _, err := io.Copy(destinationFile, sourceFile); err != nil {
+	_, err = io.Copy(destFile, sourceFile)
+	if err != nil {
 		return err
 	}
-	return nil
+
+	return destFile.Sync()
 }
 
 // backupWorker runs in the background and periodically creates backups
@@ -2112,7 +2812,11 @@ func (idx *Index) SearchWithNegatives(positiveQuery []float32, negativeQueries [
 		idx.logger.Debug("Setting efSearch parameter for negative search", zap.Int("efSearch", efSearch))
 
 		// Perform the search
-		results = idx.hnsw.Search(positiveQuery, searchK)
+		results, err = idx.hnsw.Search(positiveQuery, searchK)
+		if err != nil {
+			idx.logger.Error("HNSW search failed", zap.Error(err))
+			return
+		}
 
 		// Restore the original efSearch value
 		idx.hnsw.EfSearch = originalEf
@@ -2504,7 +3208,12 @@ func (idx *Index) BatchAppendFromArrow(records []arrow.Record) error {
 		for _, item := range allBatchItems {
 			// Add to HNSW graph
 			node := hnsw.MakeNode(item.id, item.vector)
-			idx.hnsw.Add(node)
+			if err := idx.hnsw.Add(node); err != nil {
+				// Log the error but continue with other operations
+				idx.logger.Warn("Failed to add node to HNSW graph during batch append",
+					zap.Uint64("id", item.id),
+					zap.Error(err))
+			}
 
 			// Update in-memory metadata and cache
 			idx.metadata[item.id] = item.meta
@@ -2515,7 +3224,7 @@ func (idx *Index) BatchAppendFromArrow(records []arrow.Record) error {
 		}
 
 		// If we have a database connection, store metadata there too
-		if idx.dbConn != nil {
+		if idx.connPool != nil {
 			// Use the index's allocator if available, otherwise create a new one
 			var pool memory.Allocator
 			if idx.allocator != nil {
@@ -2568,8 +3277,15 @@ func (idx *Index) BatchAppendFromArrow(records []arrow.Record) error {
 				// Build the record
 				record := builder.NewRecord()
 
+				// Get a connection from the pool
+				conn, err := idx.connPool.GetConnection()
+				if err != nil {
+					return fmt.Errorf("failed to get database connection: %w", err)
+				}
+				defer idx.connPool.ReleaseConnection(conn)
+
 				// Insert using ADBC
-				_, err := idx.dbConn.IngestCreateAppend(context.Background(), "metadata", record)
+				_, err = conn.IngestCreateAppend(context.Background(), "metadata", record)
 
 				// Clean up
 				record.Release()
@@ -2588,74 +3304,39 @@ func (idx *Index) BatchAppendFromArrow(records []arrow.Record) error {
 	return nil
 }
 
-// DeleteVector deletes a vector from the index.
+// DeleteVector removes a vector from the index.
 func (idx *Index) DeleteVector(id uint64) error {
 	idx.lock.Lock()
 	defer idx.lock.Unlock()
 
-	if _, ok := idx.vectors[id]; !ok {
+	// Check if the vector exists
+	if _, exists := idx.vectors[id]; !exists {
 		return fmt.Errorf("vector with id %d not found", id)
 	}
-
-	// Remove from all relevant maps
-	delete(idx.vectors, id)
-	delete(idx.metadata, id)
-	idx.cache.Delete(id)
 
 	// Remove from HNSW graph
 	idx.hnsw.Delete(id)
 
-	// Remove from database if available
-	if idx.dbConn != nil {
-		ctx := context.Background()
+	// Remove from in-memory maps
+	delete(idx.vectors, id)
+	delete(idx.metadata, id)
+	idx.cache.Delete(id)
 
-		// Create a parameterized query
-		query := "DELETE FROM metadata WHERE id = ?"
-
-		// Create a statement
-		stmt, err := idx.dbConn.conn.NewStatement()
+	// Remove from database if connected
+	if idx.connPool != nil {
+		conn, err := idx.connPool.GetConnection()
 		if err != nil {
-			idx.logger.Error("failed to create statement", zap.Error(err))
-			return fmt.Errorf("failed to create statement: %w", err)
+			return fmt.Errorf("failed to get database connection: %w", err)
 		}
-		defer stmt.Close()
+		defer idx.connPool.ReleaseConnection(conn)
 
-		if err := stmt.SetSqlQuery(query); err != nil {
-			idx.logger.Error("failed to set SQL query", zap.Error(err))
-			return fmt.Errorf("failed to set SQL query: %w", err)
-		}
-
-		// Create an Arrow record with the ID
-		idBuilder := array.NewUint64Builder(idx.allocator)
-		defer idBuilder.Release()
-
-		idBuilder.Append(id)
-		idArray := idBuilder.NewArray()
-		defer idArray.Release()
-
-		// Create the record
-		schema := arrow.NewSchema(
-			[]arrow.Field{
-				{Name: "id", Type: arrow.PrimitiveTypes.Uint64, Nullable: false},
-			},
-			nil,
-		)
-
-		record := array.NewRecord(schema, []arrow.Array{idArray}, 1)
-		defer record.Release()
-
-		// Bind the record
-		if err := stmt.Bind(ctx, record); err != nil {
-			idx.logger.Error("failed to bind parameter", zap.Uint64("id", id), zap.Error(err))
-			return fmt.Errorf("failed to bind parameter: %w", err)
-		}
-
-		// Execute the statement
-		_, err = stmt.ExecuteUpdate(ctx)
+		_, err = conn.Exec(context.Background(), fmt.Sprintf("DELETE FROM metadata WHERE id = %d", id))
 		if err != nil {
-			idx.logger.Error("failed to delete from database", zap.Uint64("id", id), zap.Error(err))
 			return fmt.Errorf("failed to delete from database: %w", err)
 		}
+
+		// Invalidate query cache after modifying the database
+		idx.invalidateQueryCache()
 	}
 
 	return nil
@@ -2663,79 +3344,53 @@ func (idx *Index) DeleteVector(id uint64) error {
 
 // DeleteVectors deletes multiple vectors from the index.
 func (idx *Index) DeleteVectors(ids []uint64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
 	idx.lock.Lock()
 	defer idx.lock.Unlock()
 
-	// Check if all vectors exist first
+	// Check if all vectors exist
 	for _, id := range ids {
-		if _, ok := idx.vectors[id]; !ok {
+		if _, exists := idx.vectors[id]; !exists {
 			return fmt.Errorf("vector with id %d not found", id)
 		}
 	}
 
-	// Remove from all relevant maps
+	// Remove from all relevant maps and HNSW graph
 	for _, id := range ids {
 		delete(idx.vectors, id)
 		delete(idx.metadata, id)
 		idx.cache.Delete(id)
-
 		idx.hnsw.Delete(id)
 	}
 
-	// Remove from database if available
-	if idx.dbConn != nil && len(ids) > 0 {
-		ctx := context.Background()
-
-		// Create a parameterized query
-		query := "DELETE FROM metadata WHERE id = ?"
-
-		// Create a statement
-		stmt, err := idx.dbConn.conn.NewStatement()
+	// Remove from database if connected
+	if idx.connPool != nil {
+		conn, err := idx.connPool.GetConnection()
 		if err != nil {
-			idx.logger.Error("failed to create statement", zap.Error(err))
-			return fmt.Errorf("failed to create statement: %w", err)
+			return fmt.Errorf("failed to get database connection: %w", err)
 		}
-		defer stmt.Close()
+		defer idx.connPool.ReleaseConnection(conn)
 
-		if err := stmt.SetSqlQuery(query); err != nil {
-			idx.logger.Error("failed to set SQL query", zap.Error(err))
-			return fmt.Errorf("failed to set SQL query: %w", err)
-		}
-
-		// Execute delete for each ID using proper Arrow record binding
-		for _, id := range ids {
-			// Create an Arrow record with the ID
-			idBuilder := array.NewUint64Builder(idx.allocator)
-			defer idBuilder.Release()
-
-			idBuilder.Append(id)
-			idArray := idBuilder.NewArray()
-			defer idArray.Release()
-
-			// Create the record
-			schema := arrow.NewSchema(
-				[]arrow.Field{
-					{Name: "id", Type: arrow.PrimitiveTypes.Uint64, Nullable: false},
-				},
-				nil,
-			)
-
-			record := array.NewRecord(schema, []arrow.Array{idArray}, 1)
-			defer record.Release()
-
-			// Bind the record
-			if err := stmt.Bind(ctx, record); err != nil {
-				idx.logger.Error("failed to bind parameter", zap.Uint64("id", id), zap.Error(err))
-				return fmt.Errorf("failed to bind parameter: %w", err)
+		// Create a comma-separated list of IDs
+		var idList strings.Builder
+		for i, id := range ids {
+			if i > 0 {
+				idList.WriteString(", ")
 			}
-
-			// Execute the statement
-			_, err = stmt.ExecuteUpdate(ctx)
-			if err != nil {
-				idx.logger.Error("failed to delete from database", zap.Uint64("id", id), zap.Error(err))
-				return fmt.Errorf("failed to delete from database: %w", err)
-			}
+			idList.WriteString(fmt.Sprintf("%d", id))
 		}
+
+		// Execute the DELETE query
+		_, err = conn.Exec(context.Background(), fmt.Sprintf("DELETE FROM metadata WHERE id IN (%s)", idList.String()))
+		if err != nil {
+			return fmt.Errorf("failed to delete from database: %w", err)
+		}
+
+		// Invalidate query cache after modifying the database
+		idx.invalidateQueryCache()
 	}
 
 	return nil
@@ -2746,4 +3401,89 @@ func (idx *Index) Config() Config {
 	idx.lock.RLock()
 	defer idx.lock.RUnlock()
 	return idx.config
+}
+
+// AnalyzeGraph returns quality metrics for the HNSW graph.
+// This is useful for understanding the health and performance characteristics of the index.
+func (idx *Index) AnalyzeGraph() (map[string]interface{}, error) {
+	idx.lock.RLock()
+	defer idx.lock.RUnlock()
+
+	// Create an analyzer for the graph
+	analyzer := &hnsw.Analyzer[uint64]{Graph: idx.hnsw}
+
+	// Get quality metrics
+	metrics := analyzer.QualityMetrics()
+
+	// Get connectivity information
+	connectivity := analyzer.Connectivity()
+
+	// Get topography information
+	topography := analyzer.Topography()
+
+	// Create a map of all metrics
+	result := map[string]interface{}{
+		"node_count":          metrics.NodeCount,
+		"avg_connectivity":    metrics.AvgConnectivity,
+		"connectivity_stddev": metrics.ConnectivityStdDev,
+		"distortion_ratio":    metrics.DistortionRatio,
+		"layer_balance":       metrics.LayerBalance,
+		"graph_height":        metrics.GraphHeight,
+		"layer_connectivity":  connectivity,
+		"layer_topography":    topography,
+	}
+
+	return result, nil
+}
+
+// GetGraphAnalyzer returns the HNSW graph analyzer for advanced analysis.
+// This is intended for advanced users who need direct access to the analyzer.
+// Note: This method does not acquire a lock, so the caller must ensure thread safety.
+func (idx *Index) GetGraphAnalyzer() *hnsw.Analyzer[uint64] {
+	return &hnsw.Analyzer[uint64]{Graph: idx.hnsw}
+}
+
+// PreparedStatement represents a cached prepared statement
+type PreparedStatement struct {
+	query      string
+	stmt       interface{} // Generic statement type to avoid dependency issues
+	conn       *DuckDBConn
+	lastUsed   time.Time
+	usageCount int
+}
+
+// cleanupPreparedStatements periodically cleans up unused prepared statements
+func (p *ConnectionPool) cleanupPreparedStatements() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			p.stmtMu.Lock()
+			now := time.Now()
+			for key, stmt := range p.preparedStmts {
+				// Remove statements that haven't been used in the last 30 minutes and have low usage
+				if now.Sub(stmt.lastUsed) > 30*time.Minute && stmt.usageCount < 10 {
+					stmt.stmt = nil // Just clear the statement to avoid holding references
+					delete(p.preparedStmts, key)
+				}
+			}
+			p.stmtMu.Unlock()
+		case <-p.stopCleanup:
+			return // Exit the goroutine when signaled
+		}
+	}
+}
+
+// invalidateQueryCache invalidates all query cache entries
+func (idx *Index) invalidateQueryCache() {
+	// Iterate through the cache and remove all query cache entries
+	idx.cache.Range(func(key, value interface{}) bool {
+		keyStr, ok := key.(string)
+		if ok && strings.HasPrefix(keyStr, "query:") {
+			idx.cache.Delete(key)
+		}
+		return true
+	})
 }

@@ -117,6 +117,11 @@ func NewServer(opts ServerOptions, index *quiver.Index, logger *zap.Logger) *Ser
 	api := app.Group("/api")
 	v1 := api.Group("/v1")
 
+	// Index operations
+	v1.Post("/index/create", createIndexHandler(logger))
+	v1.Post("/index/backup", backupHandler(index, logger))
+	v1.Post("/index/restore", restoreHandler(index, logger))
+
 	// Vector operations
 	v1.Post("/vectors", addVectorHandler(index, logger))
 	v1.Delete("/vectors/:id", deleteVectorHandler(index, logger))
@@ -129,10 +134,6 @@ func NewServer(opts ServerOptions, index *quiver.Index, logger *zap.Logger) *Ser
 
 	// Metadata operations
 	v1.Post("/metadata/query", queryMetadataHandler(index, logger))
-
-	// Index operations
-	v1.Post("/index/backup", backupHandler(index, logger))
-	v1.Post("/index/restore", restoreHandler(index, logger))
 
 	// Add custom logging middleware
 	app.Use(customLoggingMiddleware(logger))
@@ -702,7 +703,16 @@ func restoreHandler(idx *quiver.Index, log *zap.Logger) fiber.Handler {
 	}
 }
 
-// createIndexHandler creates a new index
+// metricsHandler returns a handler for Prometheus metrics
+func metricsHandler() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		// Convert the Prometheus handler to a Fiber handler
+		handler := fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler())
+		handler(c.Context())
+		return nil
+	}
+}
+
 func createIndexHandler(logger *zap.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var opts IndexOptions
@@ -787,15 +797,5 @@ func createIndexHandler(logger *zap.Logger) fiber.Handler {
 			"message": "Index created successfully",
 			"config":  config,
 		})
-	}
-}
-
-// metricsHandler returns a handler for Prometheus metrics
-func metricsHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// Convert the Prometheus handler to a Fiber handler
-		handler := fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler())
-		handler(c.Context())
-		return nil
 	}
 }

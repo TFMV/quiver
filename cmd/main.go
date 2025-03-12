@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"strings"
+
 	"github.com/TFMV/quiver"
 	"github.com/TFMV/quiver/api"
 	"github.com/bytedance/sonic"
@@ -719,7 +721,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer logger.Sync()
+	defer func() {
+		// Sync is a best-effort operation, so we can ignore errors
+		// or log them at a lower level
+		if err := logger.Sync(); err != nil {
+			// This is a common error that can be safely ignored
+			if !strings.Contains(err.Error(), "sync /dev/stderr: invalid argument") {
+				fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
+			}
+		}
+	}()
 
 	if err := rootCmd.Execute(); err != nil {
 		// Don't log stack trace for expected errors

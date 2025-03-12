@@ -1,0 +1,789 @@
+=== RUN   TestNewIndex
+--- PASS: TestNewIndex (0.07s)
+=== RUN   TestAddAndSearch
+--- PASS: TestAddAndSearch (0.01s)
+=== RUN   TestHybridSearch
+    quiver_test.go:135: Filter search results: []
+--- PASS: TestHybridSearch (0.01s)
+=== RUN   TestAppendFromArrow
+--- PASS: TestAppendFromArrow (0.01s)
+=== RUN   TestChangelogFeatures
+--- PASS: TestChangelogFeatures (0.01s)
+=== RUN   TestSearchWithNegatives
+    quiver_test.go:356: Group vectors found in results: A=2, B=2
+--- PASS: TestSearchWithNegatives (0.01s)
+=== RUN   TestBackupRestore
+    quiver_test.go:396: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:396
+        	Error:      	"[{19 1 map[category:test name:test-19 value:19]} {20 0.99999994 map[category:test name:test-20 value:20]}]" should have 5 item(s), but has 2
+        	Test:       	TestBackupRestore
+        	Messages:   	Should return 5 results
+    quiver_test.go:447: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:447
+        	Error:      	Not equal: 
+        	            	expected: 20
+        	            	actual  : 2
+        	Test:       	TestBackupRestore
+        	Messages:   	Restored index should have the same number of vectors
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-1")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 1
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(1)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 1
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 1
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-2")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 2
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(2)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 2
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 2
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-3")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 3
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(3)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 3
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 3
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-4")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 4
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(4)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 4
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 4
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-5")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 5
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(5)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 5
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 5
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-6")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 6
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(6)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 6
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 6
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-7")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 7
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(7)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 7
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 7
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-8")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 8
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(8)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 8
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 8
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-9")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 9
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(9)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 9
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 9
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-10")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 10
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(10)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 10
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 10
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-11")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 11
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(11)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 11
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 11
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-12")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 12
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(12)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 12
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 12
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-13")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 13
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(13)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 13
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 13
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-14")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 14
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(14)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 14
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 14
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-15")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 15
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(15)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 15
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 15
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-16")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 16
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(16)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 16
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 16
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-17")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 17
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(17)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 17
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 17
+    quiver_test.go:472: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:472
+        	Error:      	Not equal: 
+        	            	expected: string("test-18")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata name should match for ID 18
+    quiver_test.go:473: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:473
+        	Error:      	Not equal: 
+        	            	expected: int(18)
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata value should match for ID 18
+    quiver_test.go:474: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:474
+        	Error:      	Not equal: 
+        	            	expected: string("test")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestBackupRestore
+        	Messages:   	Metadata category should match for ID 18
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{0.1, 0.2, 0.3}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 0.1,
+        	            	- (float32) 0.2,
+        	            	- (float32) 0.3
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 1
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{0.2, 0.4, 0.6}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 0.2,
+        	            	- (float32) 0.4,
+        	            	- (float32) 0.6
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 2
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{0.3, 0.6, 0.90000004}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 0.3,
+        	            	- (float32) 0.6,
+        	            	- (float32) 0.90000004
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 3
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{0.4, 0.8, 1.2}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 0.4,
+        	            	- (float32) 0.8,
+        	            	- (float32) 1.2
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 4
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{0.5, 1, 1.5}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 0.5,
+        	            	- (float32) 1,
+        	            	- (float32) 1.5
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 5
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{0.6, 1.2, 1.8000001}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 0.6,
+        	            	- (float32) 1.2,
+        	            	- (float32) 1.8000001
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 6
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{0.7, 1.4, 2.1000001}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 0.7,
+        	            	- (float32) 1.4,
+        	            	- (float32) 2.1000001
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 7
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{0.8, 1.6, 2.4}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 0.8,
+        	            	- (float32) 1.6,
+        	            	- (float32) 2.4
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 8
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{0.90000004, 1.8000001, 2.7}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 0.90000004,
+        	            	- (float32) 1.8000001,
+        	            	- (float32) 2.7
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 9
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{1, 2, 3}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 1,
+        	            	- (float32) 2,
+        	            	- (float32) 3
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 10
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{1.1, 2.2, 3.3000002}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 1.1,
+        	            	- (float32) 2.2,
+        	            	- (float32) 3.3000002
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 11
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{1.2, 2.4, 3.6000001}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 1.2,
+        	            	- (float32) 2.4,
+        	            	- (float32) 3.6000001
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 12
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{1.3000001, 2.6000001, 3.9}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 1.3000001,
+        	            	- (float32) 2.6000001,
+        	            	- (float32) 3.9
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 13
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{1.4, 2.8, 4.2000003}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 1.4,
+        	            	- (float32) 2.8,
+        	            	- (float32) 4.2000003
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 14
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{1.5, 3, 4.5}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 1.5,
+        	            	- (float32) 3,
+        	            	- (float32) 4.5
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 15
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{1.6, 3.2, 4.8}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 1.6,
+        	            	- (float32) 3.2,
+        	            	- (float32) 4.8
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 16
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{1.7, 3.4, 5.1000004}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 1.7,
+        	            	- (float32) 3.4,
+        	            	- (float32) 5.1000004
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 17
+    quiver_test.go:498: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:498
+        	Error:      	Not equal: 
+        	            	expected: []float32{1.8000001, 3.6000001, 5.4}
+        	            	actual  : []float32{}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,5 +1,2 @@
+        	            	-([]float32) (len=3) {
+        	            	- (float32) 1.8000001,
+        	            	- (float32) 3.6000001,
+        	            	- (float32) 5.4
+        	            	+([]float32) {
+        	            	 }
+        	Test:       	TestBackupRestore
+        	Messages:   	Vector should match for ID 18
+    quiver_test.go:504: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:504
+        	Error:      	"[{19 1 map[category:test name:test-19 value:19]} {20 0.99999994 map[category:test name:test-20 value:20]}]" should have 5 item(s), but has 2
+        	Test:       	TestBackupRestore
+        	Messages:   	Restored index should return 5 results
+    quiver_test.go:520: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:520
+        	Error:      	"2" is not greater than or equal to "3"
+        	Test:       	TestBackupRestore
+        	Messages:   	At least 3 of the top 5 results should match between original and restored index
+--- FAIL: TestBackupRestore (0.02s)
+=== RUN   TestAddWithImmediateFlush
+--- PASS: TestAddWithImmediateFlush (0.11s)
+=== RUN   TestDeleteVector
+--- PASS: TestDeleteVector (0.01s)
+=== RUN   TestDeleteVectors
+--- PASS: TestDeleteVectors (0.01s)
+=== RUN   TestParallelSearch
+    quiver_test.go:773: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:773
+        	Error:      	"[]" should have 10 item(s), but has 0
+        	Test:       	TestParallelSearch
+        	Messages:   	Should return 10 results
+    quiver_test.go:787: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:787
+        	Error:      	Should NOT be empty, but was []
+        	Test:       	TestParallelSearch
+        	Messages:   	Results for query 0 should not be empty
+    quiver_test.go:787: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:787
+        	Error:      	Should NOT be empty, but was []
+        	Test:       	TestParallelSearch
+        	Messages:   	Results for query 1 should not be empty
+    quiver_test.go:787: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:787
+        	Error:      	Should NOT be empty, but was []
+        	Test:       	TestParallelSearch
+        	Messages:   	Results for query 2 should not be empty
+    quiver_test.go:787: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:787
+        	Error:      	Should NOT be empty, but was []
+        	Test:       	TestParallelSearch
+        	Messages:   	Results for query 3 should not be empty
+    quiver_test.go:787: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:787
+        	Error:      	Should NOT be empty, but was []
+        	Test:       	TestParallelSearch
+        	Messages:   	Results for query 4 should not be empty
+    quiver_test.go:794: 
+        	Error Trace:	/Users/thomasmcgeehan/quiver/quiver/quiver_test.go:794
+        	Error:      	Not equal: 
+        	            	expected: 100
+        	            	actual  : 0
+        	Test:       	TestParallelSearch
+        	Messages:   	Node count should match the number of vectors added
+--- FAIL: TestParallelSearch (0.01s)
+FAIL
+coverage: 55.9% of statements
+FAIL	github.com/TFMV/quiver	0.747s
+FAIL
