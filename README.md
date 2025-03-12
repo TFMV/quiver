@@ -140,6 +140,152 @@ RUN wget https://github.com/duckdb/duckdb/releases/download/v0.10.0/libduckdb-li
     && ldconfig
 ```
 
+### Docker Setup for ARM64 (Apple Silicon)
+
+If you're running on ARM64 architecture (like Apple Silicon M1/M2/M3), you'll need a different approach. Here's a complete Dockerfile that works for ARM64:
+
+```dockerfile
+FROM --platform=linux/arm64 golang:1.24-bookworm
+
+WORKDIR /app
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    git \
+    unzip \
+    wget \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up DuckDB library for ARM64
+RUN wget https://github.com/duckdb/duckdb/releases/download/v0.10.0/libduckdb-linux-aarch64.zip \
+    && unzip libduckdb-linux-aarch64.zip -d /usr/lib/ \
+    && ln -s /usr/lib/libduckdb.so /usr/lib/libduckdb.so.0 \
+    && mkdir -p /usr/local/lib \
+    && ln -s /usr/lib/libduckdb.so /usr/local/lib/libduckdb.so \
+    && ln -s /usr/lib/libduckdb.so /usr/local/lib/libduckdb.so.0
+
+# Copy and build the application
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Build for ARM64
+RUN echo "Building for ARM64..." && \
+    CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -v -o /app/quiver-server cmd/main.go
+
+RUN chmod +x /app/quiver-server
+
+# Set up environment
+ENV QUIVER_STORAGE_PATH=/data
+ENV QUIVER_BACKUP_PATH=/data/backups
+ENV QUIVER_PORT=8080
+ENV LD_LIBRARY_PATH=/usr/lib:/usr/local/lib
+
+# Create data directories
+RUN mkdir -p /data /backups
+
+EXPOSE 8080
+
+VOLUME ["/data", "/backups"]
+CMD ["/app/quiver-server", "serve"]
+```
+
+To build and run the Docker container:
+
+```bash
+# Build the Docker image
+docker build --platform=linux/arm64 -t quiver-server .
+
+# Run the container
+docker run -d -p 8080:8080 --name quiver-server quiver-server
+
+# Check logs
+docker logs quiver-server
+
+# Stop the container
+docker stop quiver-server
+```
+
+### Using the docker.sh Script
+
+For easier container management, you can use the provided `docker.sh` script which automatically detects your architecture and builds the appropriate image:
+
+```bash
+# Build and run the container
+./docker.sh
+
+# Build with a clean rebuild
+./docker.sh --rebuild
+
+# Stop the container
+./docker.sh --stop
+
+# Remove the container
+./docker.sh --remove
+
+# View logs
+./docker.sh --logs
+
+# Run in foreground mode
+./docker.sh --foreground
+```
+
+The script will automatically detect whether you're on ARM64 (Apple Silicon) or AMD64 (Intel) architecture and build the appropriate image.
+
+### Using the API
+
+Once the server is running, you can interact with it using HTTP requests:
+
+#### Add a Vector
+
+```bash
+# Generate a 128-dimensional vector
+cat > generate_vector.py << 'EOF'
+#!/usr/bin/env python3
+import json
+import numpy as np
+
+# Generate a 128-dimensional vector with values between 0 and 1
+vector = np.random.rand(128).tolist()
+
+# Create the payload
+payload = {"vector": vector, "id": 12345, "metadata": {"text": "This is a test vector"}}
+
+# Print the JSON payload
+print(json.dumps(payload))
+EOF
+
+# Run the script and add the vector
+python3 generate_vector.py > vector_payload.json
+curl -X POST -H "Content-Type: application/json" -d @vector_payload.json http://localhost:8080/api/v1/vectors
+```
+
+#### Search for Vectors
+
+```bash
+# Create a search query with a random vector
+python3 -c "import json, numpy as np; print(json.dumps({'vector': np.random.rand(128).tolist(), 'k': 5}))" > search_payload.json
+curl -X POST -H "Content-Type: application/json" -d @search_payload.json http://localhost:8080/api/v1/search
+```
+
+#### Query Metadata
+
+```bash
+# Query all metadata
+curl -X POST -H "Content-Type: application/json" -d '{"query": "SELECT * FROM metadata"}' http://localhost:8080/api/v1/metadata/query
+```
+
+#### Health Check
+
+```bash
+# Check server health
+curl http://localhost:8080/health
+```
+
 ### Specifying DuckDB Library Path in Code
 
 If you've installed DuckDB in a non-standard location, you can specify the path directly in your code when creating a new DuckDB instance:
@@ -166,6 +312,7 @@ Try one of these solutions:
 1. Ensure the DuckDB library is installed in a location on your library path
 2. Set the appropriate environment variable (LD_LIBRARY_PATH on Linux, DYLD_LIBRARY_PATH on macOS)
 3. Specify the exact path to the library using `WithDriverPath` as shown above
+4. For Docker on ARM64, ensure you're creating symlinks in both `/usr/lib/` and `/usr/local/lib/` as shown in the ARM64 Dockerfile example
 
 ## License
 

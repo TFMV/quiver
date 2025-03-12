@@ -1,41 +1,50 @@
-FROM golang:1.24-alpine AS builder
+FROM --platform=linux/arm64 golang:1.24-bookworm
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apk add --no-cache git build-base
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    git \
+    unzip \
+    wget \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy go.mod and go.sum files
+# Set up DuckDB library for ARM64
+RUN wget https://github.com/duckdb/duckdb/releases/download/v0.10.0/libduckdb-linux-aarch64.zip \
+    && unzip libduckdb-linux-aarch64.zip -d /usr/lib/ \
+    && ln -s /usr/lib/libduckdb.so /usr/lib/libduckdb.so.0 \
+    && mkdir -p /usr/local/lib \
+    && ln -s /usr/lib/libduckdb.so /usr/local/lib/libduckdb.so \
+    && ln -s /usr/lib/libduckdb.so /usr/local/lib/libduckdb.so.0
+
+# Copy and build the application
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the source code
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=1 GOOS=linux go build -a -o quiver-server ./cmd/server
+# Build for ARM64
+RUN echo "Building for ARM64..." && \
+    CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -v -o /app/quiver-server cmd/main.go && \
+    echo "Build complete. Checking binary..." && \
+    ls -la /app/quiver-server && \
+    echo "Binary details complete."
 
-# Use a smaller image for the final container
-FROM alpine:3.18
+RUN chmod +x /app/quiver-server
 
-WORKDIR /app
-
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata libc6-compat
-
-# Copy the binary from the builder stage
-COPY --from=builder /app/quiver-server /app/quiver-server
-
-# Create directories for data persistence
-RUN mkdir -p /data/quiver /data/backups
-
-# Set environment variables
-ENV QUIVER_STORAGE_PATH=/data/quiver
+# Set up environment
+ENV QUIVER_STORAGE_PATH=/data
 ENV QUIVER_BACKUP_PATH=/data/backups
 ENV QUIVER_PORT=8080
+ENV LD_LIBRARY_PATH=/usr/lib:/usr/local/lib
 
-# Expose the port
+# Create data directories
+RUN mkdir -p /data /backups
+
 EXPOSE 8080
 
-# Set the entrypoint
-ENTRYPOINT ["/app/quiver-server"] 
+VOLUME ["/data", "/backups"]
+CMD ["/app/quiver-server", "serve"]
