@@ -84,6 +84,92 @@ The benchmark results provide insights into the performance of various operation
 | BatchAppendFromArrow (dim=256, vectors=10) | ~100 | ~13.14 ms | ~1.49 MB | ~16,339 |
 | BatchAppendFromArrow (dim=256, vectors=50) | ~23 | ~63.45 ms | ~6.69 MB | ~81,704 |
 
+## Connection Pool Optimization Benchmark (May 15, 2024)
+
+This benchmark compares the performance before and after implementing optimizations to the connection pool for DuckDB operations.
+
+### Optimization Details
+
+The connection pool optimizations include:
+
+- Connection reuse strategy to reduce the overhead of acquiring and releasing connections
+- Parallel processing of batch operations using worker pools
+- Dynamic connection pool sizing based on system capabilities
+- Pre-allocation of data structures to reduce memory allocations
+- Chunking of large batch operations to improve performance
+
+### Benchmark Results
+
+#### Vector Addition
+
+| Benchmark | Before Optimization (Time/Op) | After Optimization (Time/Op) | Change | Before (Memory/Op) | After (Memory/Op) | Change |
+|-----------|------------------------------|----------------------------|--------|-------------------|-------------------|--------|
+| BenchmarkAdd | ~786.6 µs | ~769.3 µs | -2.2% | ~249.3 KB | ~256.1 KB | +2.7% |
+| BenchmarkAddWithSmallBatch | ~795.1 µs | ~752.6 µs | -5.3% | ~252.0 KB | ~254.9 KB | +1.2% |
+
+#### Search Operations
+
+| Benchmark | Before Optimization (Time/Op) | After Optimization (Time/Op) | Change | Before (Memory/Op) | After (Memory/Op) | Change |
+|-----------|------------------------------|----------------------------|--------|-------------------|-------------------|--------|
+| BenchmarkSearch | ~123.7 µs | ~121.9 µs | -1.5% | ~79.9 KB | ~80.0 KB | +0.1% |
+| BenchmarkSearchWithNegatives | ~155.9 µs | ~157.0 µs | +0.7% | ~126.4 KB | ~122.4 KB | -3.2% |
+| BenchmarkSearchWithFilter | ~4.65 ms | ~4.98 ms | +7.1% | ~3.27 MB | ~3.24 MB | -0.9% |
+| BenchmarkMultiVectorSearch | ~628.9 µs | ~612.4 µs | -2.6% | ~383.7 KB | ~404.2 KB | +5.3% |
+
+### Analysis
+
+The benchmark results show modest improvements in some operations after implementing the connection pool optimizations:
+
+1. **Vector Addition**: Both `BenchmarkAdd` and `BenchmarkAddWithSmallBatch` show slight improvements in execution time (-2.2% and -5.3% respectively), with a small increase in memory usage.
+
+2. **Search Operations**: Results are mixed, with `BenchmarkSearch` and `BenchmarkMultiVectorSearch` showing slight improvements in execution time (-1.5% and -2.6%), while `BenchmarkSearchWithNegatives` and `BenchmarkSearchWithFilter` show slight regressions.
+
+3. **Memory Usage**: Memory usage has increased slightly for most operations, likely due to the additional data structures used for connection pooling and parallel processing.
+
+### Comparison with Original Implementation
+
+When comparing the current optimized connection pool with the original implementation (before any connection pool was added):
+
+| Benchmark | Original (Time/Op) | Current (Time/Op) | Change | Original (Memory/Op) | Current (Memory/Op) | Change |
+|-----------|-------------------|------------------|--------|---------------------|-------------------|--------|
+| BenchmarkAdd | ~141.4 µs | ~769.3 µs | +444% | ~20.0 KB | ~256.1 KB | +1181% |
+| BenchmarkSearch | ~78.8 µs | ~121.9 µs | +55% | ~51.1 KB | ~80.0 KB | +57% |
+| BenchmarkMultiVectorSearch | ~451.9 µs | ~612.4 µs | +36% | ~261.5 KB | ~404.2 KB | +55% |
+
+The connection pool implementation still shows significant overhead compared to the original implementation, but the optimizations have reduced this overhead slightly.
+
+### Optimization Effectiveness
+
+The optimizations have shown modest improvements, but there is still significant overhead compared to the original implementation. The most effective optimizations were:
+
+1. **Connection Reuse Strategy**: Reusing connections reduced the overhead of acquiring and releasing connections, particularly for batch operations.
+
+2. **Parallel Processing**: Using worker pools for batch operations improved performance for vector addition operations.
+
+3. **Dynamic Pool Sizing**: Adjusting the connection pool size based on system capabilities helped balance resource usage.
+
+### Further Optimization Opportunities
+
+Based on these results, the following additional optimization opportunities have been identified:
+
+1. **Connection Pooling Overhead**: Further reduce the overhead of connection management by implementing more aggressive connection reuse strategies.
+
+2. **Batch Processing**: Enhance batch processing to make better use of the connection pool, potentially by implementing a more efficient batching algorithm.
+
+3. **Query Optimization**: Optimize SQL queries to reduce execution time, particularly for filter operations.
+
+4. **Memory Management**: Implement more efficient memory management to reduce allocations and improve cache locality.
+
+### Conclusion
+
+The connection pool optimizations have shown modest improvements in performance, but there is still significant overhead compared to the original implementation. Further optimization is needed to reduce this overhead and improve overall performance.
+
+The next steps include:
+
+1. Implementing the additional optimization opportunities identified above
+2. Investigating alternative approaches to database access that may have lower overhead
+3. Conducting further benchmarks to measure the impact of these optimizations
+
 ## Performance Bottlenecks and Optimization Opportunities
 
 Based on the profiling and benchmark data, the following optimization opportunities have been identified:
