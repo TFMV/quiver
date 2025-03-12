@@ -47,6 +47,126 @@ Recent optimizations have focused on connection pooling, resource management, an
 
 The target state of the database is described in our [Documentation Site](https://tfmv.github.io/quiver/).
 
+## Installation and Setup
+
+### Prerequisites
+
+- Go 1.24 or later
+- DuckDB library (required for ADBC driver)
+
+### Installing DuckDB for ADBC
+
+Quiver uses the Apache Arrow Database Connectivity (ADBC) driver for DuckDB. A common issue is the missing DuckDB shared library. Here's how to resolve it:
+
+#### Download DuckDB Library
+
+[DuckDB ADBC Documentation](https://duckdb.org/docs/stable/clients/adbc.html)
+
+First, download the appropriate DuckDB library for your platform from the [DuckDB releases page](https://github.com/duckdb/duckdb/releases):
+
+- Linux: `libduckdb-linux-amd64.zip` (contains `libduckdb.so`)
+- macOS: `libduckdb-osx-universal.zip` (contains `libduckdb.dylib`)
+- Windows: `libduckdb-windows-amd64.zip` (contains `duckdb.dll`)
+
+#### Linux (Ubuntu/Debian)
+
+Option 1: Install to system library path:
+
+```bash
+wget https://github.com/duckdb/duckdb/releases/download/v0.10.0/libduckdb-linux-amd64.zip
+unzip libduckdb-linux-amd64.zip -d libduckdb
+sudo cp libduckdb/libduckdb.so /usr/local/lib/
+sudo ldconfig
+```
+
+Option 2: Use LD_LIBRARY_PATH (no sudo required):
+
+```bash
+wget https://github.com/duckdb/duckdb/releases/download/v0.10.0/libduckdb-linux-amd64.zip
+unzip libduckdb-linux-amd64.zip -d ~/libduckdb
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/libduckdb
+# Add to your .bashrc or .zshrc to make it permanent
+echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/libduckdb' >> ~/.bashrc
+```
+
+#### macOS
+
+Option 1: Using Homebrew:
+
+```bash
+brew install duckdb
+```
+
+Option 2: Manual installation with DYLD_LIBRARY_PATH:
+
+```bash
+wget https://github.com/duckdb/duckdb/releases/download/v0.10.0/libduckdb-osx-universal.zip
+unzip libduckdb-osx-universal.zip -d ~/libduckdb
+export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:~/libduckdb
+# Add to your .zshrc to make it permanent
+echo 'export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:~/libduckdb' >> ~/.zshrc
+```
+
+Option 3: Install to system library path:
+
+```bash
+wget https://github.com/duckdb/duckdb/releases/download/v0.10.0/libduckdb-osx-universal.zip
+unzip libduckdb-osx-universal.zip -d libduckdb
+sudo cp libduckdb/libduckdb.dylib /usr/local/lib/
+```
+
+#### Windows
+
+```powershell
+# Download the DuckDB library
+Invoke-WebRequest -Uri "https://github.com/duckdb/duckdb/releases/download/v0.10.0/libduckdb-windows-amd64.zip" -OutFile "libduckdb.zip"
+Expand-Archive -Path "libduckdb.zip" -DestinationPath "C:\libduckdb"
+
+# Add to PATH environment variable
+$env:PATH += ";C:\libduckdb"
+# To make it permanent (requires admin)
+[Environment]::SetEnvironmentVariable("PATH", $env:PATH, [EnvironmentVariableTarget]::User)
+```
+
+#### Docker
+
+If you're using Docker, add these lines to your Dockerfile:
+
+```dockerfile
+# Install DuckDB
+RUN wget https://github.com/duckdb/duckdb/releases/download/v0.10.0/libduckdb-linux-amd64.zip \
+    && unzip libduckdb-linux-amd64.zip -d /tmp/libduckdb \
+    && cp /tmp/libduckdb/libduckdb.so /usr/local/lib/ \
+    && ldconfig
+```
+
+### Specifying DuckDB Library Path in Code
+
+If you've installed DuckDB in a non-standard location, you can specify the path directly in your code when creating a new DuckDB instance:
+
+```go
+import "github.com/TFMV/quiver"
+
+// Specify the path to the DuckDB library
+db, err := quiver.NewDuckDB(quiver.WithDriverPath("/path/to/libduckdb.so"))
+```
+
+This approach is useful when you can't modify the system library paths or environment variables.
+
+### Troubleshooting Library Issues
+
+If you encounter errors like:
+
+```text
+failed to open DuckDB: error creating new DuckDB database: Internal: [Driver Manager] [DriverManager] dlopen() failed: /usr/local/lib/libduckdb.so: cannot open shared object file: No such file or directory
+```
+
+Try one of these solutions:
+
+1. Ensure the DuckDB library is installed in a location on your library path
+2. Set the appropriate environment variable (LD_LIBRARY_PATH on Linux, DYLD_LIBRARY_PATH on macOS)
+3. Specify the exact path to the library using `WithDriverPath` as shown above
+
 ## License
 
 [MIT License](LICENSE)
