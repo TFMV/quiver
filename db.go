@@ -1,6 +1,4 @@
-// Package db provides a high-performance vector database extension that integrates
-// all the capabilities of the HNSW library, including metadata filtering, hybrid search,
-// faceted search, and advanced analytics with durability.
+// Package db provides a high-performance vector database
 package db
 
 import (
@@ -22,7 +20,7 @@ import (
 	"github.com/TFMV/hnsw/hnsw-extensions/parquet"
 )
 
-// VectorDB is a high-performance vector database that integrates all HNSW capabilities
+// VectorDB is a high-performance vector database
 type VectorDB[K cmp.Ordered] struct {
 	// Core search index adapter
 	index *IndexAdapter[K]
@@ -49,7 +47,7 @@ type VectorDB[K cmp.Ordered] struct {
 	mu sync.RWMutex
 }
 
-// DBConfig defines configuration options for the vector database
+// DBConfig defines configuration options for Quiver
 type DBConfig struct {
 	// Base directory for storage
 	BaseDir string
@@ -194,7 +192,7 @@ func (sc SerializableDBConfig) toDBConfig() DBConfig {
 	return c
 }
 
-// DefaultDBConfig returns the default configuration for the vector database
+// DefaultDBConfig returns the default configuration for Quiver
 func DefaultDBConfig() DBConfig {
 	return DBConfig{
 		BaseDir:              "vectordb_data",
@@ -207,7 +205,7 @@ func DefaultDBConfig() DBConfig {
 	}
 }
 
-// DBStats contains statistics about the vector database
+// DBStats contains statistics about Quiver
 type DBStats struct {
 	// Total number of vectors
 	VectorCount int
@@ -489,7 +487,7 @@ func (db *VectorDB[K]) Add(key K, vector []float32, metadata interface{}, facetL
 	return nil
 }
 
-// BatchAdd adds multiple vectors to the database with optional metadata and facets
+// BatchAdd adds multiple vectors to Quiver with optional metadata and facets
 func (db *VectorDB[K]) BatchAdd(keys []K, vectors [][]float32, metadataList []interface{}, facetsList [][]facets.Facet) error {
 	if len(keys) != len(vectors) {
 		return errors.New("keys and vectors must have the same length")
@@ -591,7 +589,7 @@ func (db *VectorDB[K]) BatchAdd(keys []K, vectors [][]float32, metadataList []in
 	return nil
 }
 
-// Delete removes a vector from the database
+// Delete removes a vector from Quiver
 func (db *VectorDB[K]) Delete(key K) bool {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -615,7 +613,7 @@ func (db *VectorDB[K]) Delete(key K) bool {
 	return deleted
 }
 
-// BatchDelete removes multiple vectors from the database
+// BatchDelete removes multiple vectors from Quiver
 func (db *VectorDB[K]) BatchDelete(keys []K) []bool {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -750,7 +748,7 @@ func (db *VectorDB[K]) Search(query []float32, options QueryOptions) ([]SearchRe
 	return searchResults, nil
 }
 
-// GetStats returns statistics about the database
+// GetStats returns statistics about Quiver
 func (db *VectorDB[K]) GetStats() DBStats {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -968,7 +966,7 @@ func (db *VectorDB[K]) Restore(backupDir string) error {
 	return nil
 }
 
-// Close releases resources used by the database
+// Close releases resources used by Quiver
 func (db *VectorDB[K]) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -988,7 +986,7 @@ func (db *VectorDB[K]) Close() error {
 	return nil
 }
 
-// Analyze returns analytics data about the database
+// Analyze returns analytics data about Quiver
 func (db *VectorDB[K]) Analyze() (*hnsw.GraphQualityMetrics, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -1013,7 +1011,7 @@ func (db *VectorDB[K]) Analyze() (*hnsw.GraphQualityMetrics, error) {
 	return &metrics, nil
 }
 
-// DefaultQueryOptions returns the default query options for this database
+// DefaultQueryOptions returns the default query options for Quiver
 func (db *VectorDB[K]) DefaultQueryOptions() QueryOptions {
 	return DefaultQueryOptions()
 }
