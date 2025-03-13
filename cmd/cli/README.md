@@ -235,3 +235,72 @@ quiver version
    ```bash
    quiver backup --path ./backup
    ```
+
+## Docker Support
+
+Quiver can be easily deployed using Docker.
+
+### Building the Docker Image
+
+```bash
+docker build -t quiver:latest .
+```
+
+### Running with Docker
+
+```bash
+docker run -d \
+  --name quiver \
+  -p 8080:8080 \
+  -v quiver_data:/app/data \
+  -e QUIVER_INDEX_DIMENSION=128 \
+  -e QUIVER_INDEX_MAX_ELEMENTS=1000000 \
+  quiver:latest
+```
+
+### Using Docker Compose
+
+```bash
+docker-compose up -d
+```
+
+### Configuration with Docker
+
+When running Quiver in Docker, you can configure it using environment variables:
+
+```bash
+docker run -d \
+  --name quiver \
+  -p 8080:8080 \
+  -v quiver_data:/app/data \
+  -e QUIVER_SERVER_PORT=8080 \
+  -e QUIVER_SERVER_HOST=0.0.0.0 \
+  -e QUIVER_SERVER_STORAGE=/app/data \
+  -e QUIVER_INDEX_DIMENSION=256 \
+  -e QUIVER_INDEX_MAX_ELEMENTS=2000000 \
+  -e QUIVER_INDEX_DISTANCE=l2 \
+  -e QUIVER_INDEX_HNSW_M=16 \
+  -e QUIVER_INDEX_HNSW_EF_SEARCH=100 \
+  quiver:latest
+```
+
+### Interacting with Dockerized Quiver
+
+You can interact with the Quiver API running in Docker using the CLI:
+
+```bash
+# Add a vector
+docker exec quiver /app/quiver vector add --id 1 --vector "0.1,0.2,0.3,0.4" --metadata '{"title":"Example"}'
+
+# Search for similar vectors
+docker exec quiver /app/quiver search similarity --vector "0.1,0.2,0.3,0.4" --k 10
+```
+
+### Docker Compose for Development
+
+The provided docker-compose.yml file is suitable for both development and production use. It includes:
+
+- Volume mounting for persistent data storage
+- Environment variable configuration
+- Health checks
+- Automatic restart policy
