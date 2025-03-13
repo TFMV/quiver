@@ -14,6 +14,18 @@ Read all about it [here](adaptive/README.md)
 
 Quiver is a Go-based vector database that combines the best of HNSW (Hierarchical Navigable Small World) graphs with other cool search techniques.
 
+## Supported Index Types
+
+Quiver offers three powerful index types to suit different use cases:
+
+1. **HNSW**: The classic HNSW graph implementation, offering a great balance of speed and recall for most use cases.
+
+2. **Parquet**: A persistent storage-backed HNSW implementation that efficiently stores vectors in Parquet format, ideal for larger datasets that need durability.
+
+3. **Hybrid**: Our most advanced index type that combines multiple search strategies (HNSW, exact search, LSH) to optimize for both speed and recall, automatically selecting the best approach based on your data.
+
+Choose the right index type for your needs or let APT optimize your parameters automatically!
+
 ## Why Choose Quiver?
 
 - **🔍 Smart Search Strategy**: Quiver doesn't just use one search method - it combines HNSW with exact search, LSH, and data partitioning to find the best results
@@ -55,20 +67,6 @@ Quiver is a Go-based vector database that combines the best of HNSW (Hierarchica
    - Deleting vectors can degrade graph quality
    - Consider marking vectors as inactive instead of deleting them
    - If you must delete, run `OptimizeStorage` afterward
-
-## What's Coming Next?
-
-Quiver is just getting started! Here's what we're working on:
-
-1. **Distributed Search**: Search across multiple nodes
-2. **Query Caching**: Speed up repeated queries
-3. **Incremental Updates**: Update your index more efficiently
-4. **Advanced Filtering**: More powerful filtering capabilities
-5. **Vector Compression**: Reduce memory usage
-6. **Cloud Storage**: Store your vectors in the cloud
-7. **Incremental Backups**: Save space with smarter backups
-8. **Streaming Updates**: Update your index in real-time
-9. **DuckDB Integration**: Persist your vector data in DuckDB.
 
 ## License
 
