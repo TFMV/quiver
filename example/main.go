@@ -62,7 +62,7 @@ func main() {
 
 	// Demonstrate different index types
 	demoHNSWIndex(ctx, tempDir)
-	demoParquetIndex(ctx, tempDir)
+	demoParquetIndex(tempDir)
 	demoHybridIndex(ctx, tempDir)
 
 	// Demonstrate APT features
@@ -110,7 +110,7 @@ func demoHNSWIndex(ctx context.Context, baseDir string) {
 }
 
 // demoParquetIndex demonstrates the Parquet index type
-func demoParquetIndex(ctx context.Context, baseDir string) {
+func demoParquetIndex(baseDir string) {
 	log.Println("\n=== Parquet Index Demonstration ===")
 
 	// Create a database configuration for Parquet

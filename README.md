@@ -24,7 +24,7 @@ Quiver offers three powerful index types to suit different use cases:
 
 3. **Hybrid**: Our most advanced index type that combines multiple search strategies (HNSW, exact search, LSH) to optimize for both speed and recall, automatically selecting the best approach based on your data.
 
-Choose the right index type for your needs or let APT optimize your parameters automatically!
+Choose the right index type for your needs and let APT optimize your parameters automatically!
 
 ## Why Choose Quiver?
 
@@ -40,6 +40,49 @@ Choose the right index type for your needs or let APT optimize your parameters a
 - **🚀 Performance**: Quiver is built for speed without sacrificing accuracy
 - **😌 Easy to Use**: Our fluent API just makes sense
 - **🧠 Adaptive Tuning**: APT automatically optimizes parameters based on your workload
+
+## What can you do with Quiver?
+
+Quiver makes it easy to form complex queries and any of our three index types.
+
+```go
+func SearchWithComplexOptions(database *db.VectorDB[uint64]) {
+   log.Println("\nPerforming search with complex options...")
+
+    // Create a query vector
+    queryVector := []float32{0.2, 0.3, 0.4, 0.5, 0.6}
+
+    // Create a negative example vector
+    negativeVector := []float32{0.9, 0.8, 0.7, 0.6, 0.5}
+
+    // Create a facet filter for active items
+    activeFilter := facets.NewEqualityFilter("is_active", true)
+
+    // Create a metadata filter for vectors with score > 0.5
+    metadataFilter := []byte(`{"score": {"$gt": 0.5}}`)
+
+    // Create search options with all filters
+    options := database.DefaultQueryOptions().
+        WithK(5).
+        WithNegativeExample(negativeVector).
+        WithNegativeWeight(0.5).
+        WithFacetFilters(activeFilter).
+        WithMetadataFilter(metadataFilter)
+
+    // Perform the search
+    results, err := database.Search(queryVector, options)
+    if err != nil {
+       log.Printf("Search with complex options failed: %v", err)
+       return
+    }
+
+    // Display results
+   log.Printf("Found %d results (with complex options):", len(results))
+   for i, result := range results {
+     log.Printf("  Result %d: Key=%d, Distance=%f", i+1, result.Key, result.Distance)
+   }
+}
+```
 
 ## Tips for Best Performance
 
