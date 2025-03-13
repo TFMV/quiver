@@ -1,5 +1,0 @@
-./bench/quiver.test
-./bench/dimreduce.test
-./data/data.parquet
-./data/data_10000.parquet
-./assets/article.png
