@@ -110,7 +110,3 @@ If you encounter issues with the APT system, you can:
 1. Check the logs for error messages.
 2. Disable the APT system and use manual parameters.
 3. Reset the APT system by deleting the `apt` directory in the Quiver data directory.
-
-## License
-
-The APT system is part of Quiver and is licensed under the same license as Quiver.

@@ -1,410 +1,570 @@
+// Package main provides a comprehensive example of using Quiver
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/TFMV/hnsw"
 	"github.com/TFMV/hnsw/hnsw-extensions/facets"
 	"github.com/TFMV/hnsw/hnsw-extensions/hybrid"
-	"github.com/bytedance/sonic"
-	"github.com/TFMV/quiver"
+	db "github.com/TFMV/quiver"
+	"github.com/TFMV/quiver/adaptive"
 )
-
-const (
-	NUM_VECTORS = 10000
-	DIMS        = 128
-)
-
-// Document represents a document with metadata
-type Document struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Content  string   `json:"content"`
-	Category string   `json:"category"`
-	Tags     []string `json:"tags"`
-	Score    float64  `json:"score"`
-}
-
-// indexTypeToString converts an IndexType to a string
-func indexTypeToString(indexType hybrid.IndexType) string {
-	switch indexType {
-	case hybrid.ExactIndexType:
-		return "Exact"
-	case hybrid.HNSWIndexType:
-		return "HNSW"
-	case hybrid.LSHIndexType:
-		return "LSH"
-	case hybrid.HybridIndexType:
-		return "Hybrid"
-	default:
-		return "Unknown"
-	}
-}
 
 func main() {
-	// Set random seed
-	rand.Seed(time.Now().UnixNano())
+	// Initialize logging
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Println("Starting Quiver comprehensive example")
 
-	// Create a vector database
-	fmt.Println("Creating vector database...")
-	db, err := createVectorDB()
+	// Create a context that can be cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle signals for graceful shutdown
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-signalCh
+		log.Println("Received shutdown signal")
+		cancel()
+	}()
+
+	// Create a temporary directory for examples
+	tempDir, err := os.MkdirTemp("", "quiver-example")
 	if err != nil {
-		log.Fatalf("Failed to create vector database: %v", err)
+		log.Fatalf("Failed to create temporary directory: %v", err)
 	}
-	defer db.Close()
+	defer os.RemoveAll(tempDir)
+	log.Printf("Using temporary directory: %s", tempDir)
 
-	// Add vectors
-	fmt.Println("Adding vectors...")
-	addVectors(db)
+	// Initialize Adaptive Parameter Tuning (APT)
+	log.Println("\n=== Initializing Adaptive Parameter Tuning (APT) ===")
+	log.Println("APT is enabled by default in Quiver and requires no configuration.")
+	log.Println("It automatically optimizes HNSW parameters based on your workload.")
 
-	// Search
-	fmt.Println("\nPerforming simple search...")
-	simpleSearch(db)
-
-	fmt.Println("\nPerforming search with facet filters...")
-	searchWithFacetFilters(db)
-
-	fmt.Println("\nPerforming search with negative examples...")
-	searchWithNegativeExamples(db)
-
-	// Create a backup
-	fmt.Println("\nCreating backup...")
-	backupDir := "./backup"
-	if err := db.Backup(backupDir); err != nil {
-		log.Fatalf("Failed to create backup: %v", err)
+	// Initialize APT system
+	aptDir := filepath.Join(tempDir, "apt")
+	if err := os.MkdirAll(aptDir, 0755); err != nil {
+		log.Printf("Warning: Failed to create APT directory: %v", err)
 	}
-	fmt.Printf("Backup created at %s\n", backupDir)
+	if err := adaptive.Initialize(aptDir, true); err != nil {
+		log.Printf("Warning: Failed to initialize APT: %v", err)
+	}
 
-	// Delete some vectors
-	fmt.Println("\nDeleting vectors...")
-	deleteVectors(db)
+	// Demonstrate different index types
+	demoHNSWIndex(ctx, tempDir)
+	demoParquetIndex(ctx, tempDir)
+	demoHybridIndex(ctx, tempDir)
 
-	// Display statistics
-	fmt.Println("\nDatabase statistics after deletion:")
-	displayStats(db)
+	// Demonstrate APT features
+	demoAPT()
 
-	// Create a new database instance for restoration
-	fmt.Println("\nCreating new database instance for restoration...")
-	restoredDB, err := createEmptyVectorDB()
+	// Shutdown APT system
+	adaptive.Shutdown()
+
+	log.Println("\nQuiver comprehensive example completed successfully")
+}
+
+// demoHNSWIndex demonstrates the HNSW index type
+func demoHNSWIndex(ctx context.Context, baseDir string) {
+	log.Println("\n=== HNSW Index Demonstration ===")
+
+	// Create a database configuration for HNSW
+	config := db.DefaultDBConfig()
+	config.BaseDir = baseDir + "/hnsw"
+	config.Hybrid.Type = hybrid.HNSWIndexType
+	config.Hybrid.Distance = hnsw.CosineDistance
+	config.Hybrid.M = 16
+	config.Hybrid.EfSearch = 100
+
+	// Create a Quiver database with HNSW index
+	database, err := db.NewVectorDB[uint64](config)
 	if err != nil {
-		log.Fatalf("Failed to create empty vector database: %v", err)
+		log.Fatalf("Failed to create HNSW database: %v", err)
+	}
+	defer database.Close()
+	log.Println("HNSW database created successfully")
+
+	// Add vectors with metadata and facets
+	addVectorsWithMetadata(database)
+
+	// Perform different types of searches
+	basicSearch(database)
+	searchWithNegatives(database)
+	searchWithFacets(database)
+	searchWithMetadataFilters(database)
+
+	// Demonstrate batch operations
+	demoBatchOperations(database)
+
+	log.Println("HNSW index demonstration completed")
+}
+
+// demoParquetIndex demonstrates the Parquet index type
+func demoParquetIndex(ctx context.Context, baseDir string) {
+	log.Println("\n=== Parquet Index Demonstration ===")
+
+	// Create a database configuration for Parquet
+	config := db.DefaultDBConfig()
+	config.BaseDir = baseDir + "/parquet"
+	config.Hybrid.Type = hybrid.HNSWIndexType // We'll use HNSW with Parquet storage
+	config.Hybrid.Distance = hnsw.CosineDistance
+	config.Hybrid.M = 16
+	config.Hybrid.EfSearch = 100
+
+	// Configure Parquet storage
+	config.Parquet.Directory = baseDir + "/parquet/data"
+	// Parquet configuration is handled internally
+
+	// Create a Quiver database with Parquet storage
+	database, err := db.NewVectorDB[uint64](config)
+	if err != nil {
+		log.Fatalf("Failed to create Parquet database: %v", err)
+	}
+	defer database.Close()
+	log.Println("Parquet database created successfully")
+
+	// Add vectors with metadata and facets
+	addVectorsWithMetadata(database)
+
+	// Perform basic search
+	basicSearch(database)
+
+	// Demonstrate backup and restore
+	demoBackupRestore(database, baseDir+"/parquet/backup")
+
+	log.Println("Parquet index demonstration completed")
+}
+
+// demoHybridIndex demonstrates the Hybrid index type
+func demoHybridIndex(ctx context.Context, baseDir string) {
+	log.Println("\n=== Hybrid Index Demonstration ===")
+
+	// Create a database configuration for Hybrid index
+	config := db.DefaultDBConfig()
+	config.BaseDir = baseDir + "/hybrid"
+	config.Hybrid.Type = hybrid.HybridIndexType
+	config.Hybrid.Distance = hnsw.CosineDistance
+	config.Hybrid.M = 16
+	config.Hybrid.EfSearch = 100
+
+	// Hybrid-specific settings
+	config.Hybrid.ExactThreshold = 1000 // Use exact search for datasets smaller than 1000 vectors
+	// Note: LSH settings are configured internally by the hybrid index
+
+	// Create a Quiver database with Hybrid index
+	database, err := db.NewVectorDB[uint64](config)
+	if err != nil {
+		log.Fatalf("Failed to create Hybrid database: %v", err)
+	}
+	defer database.Close()
+	log.Println("Hybrid database created successfully")
+
+	// Add vectors with metadata and facets
+	addVectorsWithMetadata(database)
+
+	// Perform basic search
+	basicSearch(database)
+
+	// Perform search with complex query options
+	searchWithComplexOptions(database)
+
+	log.Println("Hybrid index demonstration completed")
+}
+
+// addVectorsWithMetadata adds sample vectors with metadata and facets
+func addVectorsWithMetadata(database *db.VectorDB[uint64]) {
+	log.Println("Adding vectors with metadata and facets...")
+
+	// Create 1000 random vectors
+	numVectors := 1000
+	dimension := 5 // Using small dimension for example purposes
+
+	for i := 0; i < numVectors; i++ {
+		// Create a random vector
+		vector := make([]float32, dimension)
+		for j := 0; j < dimension; j++ {
+			vector[j] = rand.Float32()
+		}
+
+		// Create metadata
+		metadata := map[string]interface{}{
+			"id":          i,
+			"timestamp":   time.Now().Unix(),
+			"description": fmt.Sprintf("Vector %d", i),
+			"score":       rand.Float64(),
+			"tags":        []string{"example", fmt.Sprintf("tag-%d", i%5)},
+		}
+
+		// Create facets
+		vectorFacets := []facets.Facet{
+			facets.NewBasicFacet("category", fmt.Sprintf("category-%d", i%5)),
+			facets.NewBasicFacet("region", fmt.Sprintf("region-%d", i%3)),
+			facets.NewBasicFacet("is_active", i%2 == 0),
+		}
+
+		// Add the vector with metadata and facets
+		key := uint64(i + 1) // Keys start from 1
+		metadataBytes, _ := json.Marshal(metadata)
+		err := database.Add(key, vector, metadataBytes, vectorFacets)
+		if err != nil {
+			log.Printf("Failed to add vector %d: %v", i, err)
+		}
+	}
+
+	log.Printf("Added %d vectors with metadata and facets", numVectors)
+}
+
+// basicSearch demonstrates a basic vector search
+func basicSearch(database *db.VectorDB[uint64]) {
+	log.Println("\nPerforming basic search...")
+
+	// Create a query vector
+	queryVector := []float32{0.2, 0.3, 0.4, 0.5, 0.6}
+
+	// Create search options
+	options := database.DefaultQueryOptions().WithK(3) // Return top 3 results
+
+	// Perform the search
+	results, err := database.Search(queryVector, options)
+	if err != nil {
+		log.Printf("Search failed: %v", err)
+		return
+	}
+
+	// Display results
+	log.Printf("Found %d results:", len(results))
+	for i, result := range results {
+		log.Printf("  Result %d: Key=%d, Distance=%f", i+1, result.Key, result.Distance)
+
+		// Display metadata if available
+		if len(result.Metadata) > 0 {
+			var metadataMap map[string]interface{}
+			if err := json.Unmarshal(result.Metadata, &metadataMap); err == nil {
+				log.Printf("    Metadata: %v", metadataMap)
+			}
+		}
+
+		// Display facets if available
+		if len(result.Facets) > 0 {
+			log.Printf("    Facets: %v", result.Facets)
+		}
+	}
+}
+
+// searchWithNegatives demonstrates search with negative examples
+func searchWithNegatives(database *db.VectorDB[uint64]) {
+	log.Println("\nPerforming search with negative examples...")
+
+	// Create a query vector
+	queryVector := []float32{0.2, 0.3, 0.4, 0.5, 0.6}
+
+	// Create a negative example vector
+	negativeVector := []float32{0.9, 0.8, 0.7, 0.6, 0.5}
+
+	// Create search options with negative example
+	options := database.DefaultQueryOptions().
+		WithK(3).
+		WithNegativeExample(negativeVector).
+		WithNegativeWeight(0.7) // Higher weight gives more importance to avoiding negative examples
+
+	// Perform the search
+	results, err := database.Search(queryVector, options)
+	if err != nil {
+		log.Printf("Search with negatives failed: %v", err)
+		return
+	}
+
+	// Display results
+	log.Printf("Found %d results (with negative examples):", len(results))
+	for i, result := range results {
+		log.Printf("  Result %d: Key=%d, Distance=%f", i+1, result.Key, result.Distance)
+	}
+}
+
+// searchWithFacets demonstrates search with facet filters
+func searchWithFacets(database *db.VectorDB[uint64]) {
+	log.Println("\nPerforming search with facet filters...")
+
+	// Create a query vector
+	queryVector := []float32{0.2, 0.3, 0.4, 0.5, 0.6}
+
+	// Create a facet filter for category-1
+	categoryFilter := facets.NewEqualityFilter("category", "category-1")
+
+	// Create search options with facet filter
+	options := database.DefaultQueryOptions().
+		WithK(3).
+		WithFacetFilters(categoryFilter)
+
+	// Perform the search
+	results, err := database.Search(queryVector, options)
+	if err != nil {
+		log.Printf("Search with facets failed: %v", err)
+		return
+	}
+
+	// Display results
+	log.Printf("Found %d results (with facet filters):", len(results))
+	for i, result := range results {
+		log.Printf("  Result %d: Key=%d, Distance=%f", i+1, result.Key, result.Distance)
+
+		// Display facets if available
+		if len(result.Facets) > 0 {
+			log.Printf("    Facets: %v", result.Facets)
+		}
+	}
+}
+
+// searchWithMetadataFilters demonstrates search with metadata filters
+func searchWithMetadataFilters(database *db.VectorDB[uint64]) {
+	log.Println("\nPerforming search with metadata filters...")
+
+	// Create a query vector
+	queryVector := []float32{0.2, 0.3, 0.4, 0.5, 0.6}
+
+	// Create a metadata filter for vectors with id < 500
+	metadataFilter := []byte(`{"id": {"$lt": 500}}`)
+
+	// Create search options with metadata filter
+	options := database.DefaultQueryOptions().
+		WithK(3).
+		WithMetadataFilter(metadataFilter)
+
+	// Perform the search
+	results, err := database.Search(queryVector, options)
+	if err != nil {
+		log.Printf("Search with metadata filters failed: %v", err)
+		return
+	}
+
+	// Display results
+	log.Printf("Found %d results (with metadata filters):", len(results))
+	for i, result := range results {
+		log.Printf("  Result %d: Key=%d, Distance=%f", i+1, result.Key, result.Distance)
+
+		// Display metadata if available
+		if len(result.Metadata) > 0 {
+			var metadataMap map[string]interface{}
+			if err := json.Unmarshal(result.Metadata, &metadataMap); err == nil {
+				log.Printf("    Metadata: %v", metadataMap)
+			}
+		}
+	}
+}
+
+// searchWithComplexOptions demonstrates search with complex query options
+func searchWithComplexOptions(database *db.VectorDB[uint64]) {
+	log.Println("\nPerforming search with complex options...")
+
+	// Create a query vector
+	queryVector := []float32{0.2, 0.3, 0.4, 0.5, 0.6}
+
+	// Create a negative example vector
+	negativeVector := []float32{0.9, 0.8, 0.7, 0.6, 0.5}
+
+	// Create a facet filter for active items
+	activeFilter := facets.NewEqualityFilter("is_active", true)
+
+	// Create a metadata filter for vectors with score > 0.5
+	metadataFilter := []byte(`{"score": {"$gt": 0.5}}`)
+
+	// Create search options with all filters
+	options := database.DefaultQueryOptions().
+		WithK(5).
+		WithNegativeExample(negativeVector).
+		WithNegativeWeight(0.5).
+		WithFacetFilters(activeFilter).
+		WithMetadataFilter(metadataFilter)
+
+	// Perform the search
+	results, err := database.Search(queryVector, options)
+	if err != nil {
+		log.Printf("Search with complex options failed: %v", err)
+		return
+	}
+
+	// Display results
+	log.Printf("Found %d results (with complex options):", len(results))
+	for i, result := range results {
+		log.Printf("  Result %d: Key=%d, Distance=%f", i+1, result.Key, result.Distance)
+	}
+}
+
+// demoBatchOperations demonstrates batch operations
+func demoBatchOperations(database *db.VectorDB[uint64]) {
+	log.Println("\nDemonstrating batch operations...")
+
+	// Create batch data
+	batchSize := 10
+	keys := make([]uint64, batchSize)
+	vectors := make([][]float32, batchSize)
+	metadataList := make([]interface{}, batchSize)
+	facetsList := make([][]facets.Facet, batchSize)
+
+	// Prepare batch data
+	for i := 0; i < batchSize; i++ {
+		// Create key (starting from 2000 to avoid conflicts)
+		keys[i] = uint64(2000 + i)
+
+		// Create vector
+		vector := make([]float32, 5)
+		for j := 0; j < 5; j++ {
+			vector[j] = rand.Float32()
+		}
+		vectors[i] = vector
+
+		// Create metadata
+		metadata := map[string]interface{}{
+			"batch_id":    i,
+			"timestamp":   time.Now().Unix(),
+			"description": fmt.Sprintf("Batch vector %d", i),
+		}
+		metadataBytes, _ := json.Marshal(metadata)
+		metadataList[i] = metadataBytes
+
+		// Create facets
+		facetsList[i] = []facets.Facet{
+			facets.NewBasicFacet("batch", true),
+			facets.NewBasicFacet("index", i),
+		}
+	}
+
+	// Perform batch add
+	log.Println("Adding vectors in batch...")
+	err := database.BatchAdd(keys, vectors, metadataList, facetsList)
+	if err != nil {
+		log.Printf("Batch add failed: %v", err)
+		return
+	}
+	log.Printf("Added %d vectors in batch", batchSize)
+
+	// Perform batch delete
+	log.Println("Deleting some vectors in batch...")
+	keysToDelete := []uint64{2000, 2002, 2004, 2006, 2008}
+	deleteResults := database.BatchDelete(keysToDelete)
+
+	// Check delete results
+	successCount := 0
+	for i, success := range deleteResults {
+		if success {
+			successCount++
+			log.Printf("Successfully deleted key %d", keysToDelete[i])
+		} else {
+			log.Printf("Failed to delete key %d", keysToDelete[i])
+		}
+	}
+	log.Printf("Deleted %d/%d vectors in batch", successCount, len(keysToDelete))
+}
+
+// demoBackupRestore demonstrates backup and restore functionality
+func demoBackupRestore(database *db.VectorDB[uint64], backupDir string) {
+	log.Println("\nDemonstrating backup and restore...")
+
+	// Create backup directory
+	if err := os.MkdirAll(filepath.Dir(backupDir), 0755); err != nil {
+		log.Printf("Failed to create backup directory: %v", err)
+		return
+	}
+
+	// Perform backup
+	log.Printf("Backing up database to %s...", backupDir)
+	err := database.Backup(backupDir)
+	if err != nil {
+		log.Printf("Backup failed: %v", err)
+		return
+	}
+	log.Println("Backup completed successfully")
+
+	// Create a new database for restore
+	log.Println("Creating a new database for restore...")
+	config := db.DefaultDBConfig()
+	config.BaseDir = backupDir + "_restored"
+
+	restoredDB, err := db.NewVectorDB[uint64](config)
+	if err != nil {
+		log.Printf("Failed to create database for restore: %v", err)
+		return
 	}
 	defer restoredDB.Close()
 
-	// Restore from backup
-	fmt.Println("Restoring from backup...")
-	if err := restoredDB.Restore(backupDir); err != nil {
-		log.Fatalf("Failed to restore from backup: %v", err)
-	}
-	fmt.Println("Database restored successfully!")
-
-	// Display statistics of restored database
-	fmt.Println("\nRestored database statistics:")
-	displayStats(restoredDB)
-
-	// Verify restoration by performing a search
-	fmt.Println("\nVerifying restoration with a search...")
-	simpleSearchOnDB(restoredDB)
-}
-
-// createVectorDB creates a new vector database
-func createVectorDB() (*db.VectorDB[string], error) {
-	// Create a temporary directory for the database
-	tempDir, err := os.MkdirTemp("", "vectordb-example")
+	// Perform restore
+	log.Printf("Restoring database from %s...", backupDir)
+	err = restoredDB.Restore(backupDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
+		log.Printf("Restore failed: %v", err)
+		return
 	}
+	log.Println("Restore completed successfully")
 
-	fmt.Printf("Using temporary directory: %s\n", tempDir)
+	// Verify restore by performing a search
+	log.Println("Verifying restore by performing a search...")
+	queryVector := []float32{0.2, 0.3, 0.4, 0.5, 0.6}
+	options := restoredDB.DefaultQueryOptions().WithK(3)
 
-	// Configure the vector database
-	config := db.DBConfig{
-		BaseDir: tempDir,
-		Hybrid: hybrid.IndexConfig{
-			Type:     hybrid.HybridIndexType,
-			M:        16,
-			Ml:       0.25,
-			EfSearch: 50,
-			Distance: hnsw.CosineDistance,
-		},
-	}
-
-	// Create the vector database
-	return db.NewVectorDB[string](config)
-}
-
-// createEmptyVectorDB creates an empty vector database for restoration
-func createEmptyVectorDB() (*db.VectorDB[string], error) {
-	// Create a temporary directory for the database
-	dbDir := "./temp_db"
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create database directory: %w", err)
-	}
-
-	// Create database configuration
-	config := db.DBConfig{
-		BaseDir: dbDir,
-		Hybrid: hybrid.IndexConfig{
-			Type:     hybrid.HybridIndexType,
-			M:        16,
-			Ml:       0.25,
-			EfSearch: 50,
-			Distance: hnsw.CosineDistance,
-		},
-	}
-
-	// Create the database
-	return db.NewVectorDB[string](config)
-}
-
-// generateRandomVector generates a random vector of the specified dimension
-func generateRandomVector(dim int) []float32 {
-	vector := make([]float32, dim)
-	for i := range vector {
-		vector[i] = rand.Float32()
-	}
-	return vector
-}
-
-// generateRandomDocument generates a random document with the specified ID
-func generateRandomDocument(id string) Document {
-	categories := []string{"technology", "science", "business", "entertainment", "health"}
-	tags := []string{"ai", "machine learning", "data science", "cloud", "security", "mobile", "web"}
-
-	// Select random category and tags
-	category := categories[rand.Intn(len(categories))]
-	numTags := rand.Intn(3) + 1
-	docTags := make([]string, numTags)
-	for i := 0; i < numTags; i++ {
-		docTags[i] = tags[rand.Intn(len(tags))]
-	}
-
-	return Document{
-		ID:       id,
-		Title:    fmt.Sprintf("Document %s", id),
-		Content:  fmt.Sprintf("This is the content of document %s", id),
-		Category: category,
-		Tags:     docTags,
-		Score:    rand.Float64() * 10.0,
-	}
-}
-
-// addVectors adds random vectors to the database
-func addVectors(db *db.VectorDB[string]) {
-	// Generate random vectors and documents for batch insertion
-	keys := make([]string, NUM_VECTORS)
-	vectors := make([][]float32, NUM_VECTORS)
-	metadataList := make([]interface{}, NUM_VECTORS)
-	facetsList := make([][]facets.Facet, NUM_VECTORS)
-
-	for i := 0; i < NUM_VECTORS; i++ {
-		id := fmt.Sprintf("%d", i)
-		keys[i] = id
-		vectors[i] = generateRandomVector(DIMS)
-
-		// Create document
-		doc := generateRandomDocument(id)
-		metadataList[i] = doc
-
-		// Create facets
-		docFacets := []facets.Facet{
-			facets.NewBasicFacet("category", doc.Category),
-			facets.NewBasicFacet("score", doc.Score),
-		}
-
-		// Add tags as facets
-		for _, tag := range doc.Tags {
-			docFacets = append(docFacets, facets.NewBasicFacet("tag", tag))
-		}
-
-		facetsList[i] = docFacets
-	}
-
-	// Measure time for batch insertion
-	startTime := time.Now()
-
-	// Add vectors in batches
-	batchSize := 1000
-	for i := 0; i < NUM_VECTORS; i += batchSize {
-		end := i + batchSize
-		if end > NUM_VECTORS {
-			end = NUM_VECTORS
-		}
-
-		batchKeys := keys[i:end]
-		batchVectors := vectors[i:end]
-		batchMetadata := metadataList[i:end]
-		batchFacets := facetsList[i:end]
-
-		if err := db.BatchAdd(batchKeys, batchVectors, batchMetadata, batchFacets); err != nil {
-			log.Fatalf("Failed to add batch of vectors: %v", err)
-		}
-
-		fmt.Printf("Added batch %d/%d (%d vectors)\n", i/batchSize+1, (NUM_VECTORS+batchSize-1)/batchSize, len(batchKeys))
-	}
-
-	elapsed := time.Since(startTime)
-	fmt.Printf("Added %d vectors in %v (%.2f vectors/sec)\n", NUM_VECTORS, elapsed, float64(NUM_VECTORS)/elapsed.Seconds())
-
-	// Optimize storage
-	fmt.Println("Optimizing storage...")
-	if err := db.OptimizeStorage(); err != nil {
-		log.Fatalf("Failed to optimize storage: %v", err)
-	}
-}
-
-// simpleSearch performs a simple search on the database
-func simpleSearch(db *db.VectorDB[string]) {
-	// Create a random vector for search
-	queryVector := generateRandomVector(DIMS)
-
-	// Use the fluent API for query options
-	options := db.DefaultQueryOptions().WithK(5)
-
-	// Perform search
-	results, err := db.Search(queryVector, options)
+	results, err := restoredDB.Search(queryVector, options)
 	if err != nil {
-		log.Fatalf("Failed to search: %v", err)
+		log.Printf("Search on restored database failed: %v", err)
+		return
 	}
 
-	// Display results
-	fmt.Printf("Found %d results\n", len(results))
-	for i, result := range results {
-		var doc Document
-		if err := sonic.Unmarshal(result.Metadata, &doc); err != nil {
-			log.Printf("Failed to unmarshal metadata: %v", err)
-			continue
-		}
-		fmt.Printf("  %d. %s (distance: %.4f, category: %s)\n", i+1, doc.Title, result.Distance, doc.Category)
-	}
+	log.Printf("Found %d results in restored database", len(results))
 }
 
-// searchWithFacetFilters performs a search with facet filters
-func searchWithFacetFilters(db *db.VectorDB[string]) {
-	// Create a random vector for search
-	queryVector := generateRandomVector(DIMS)
+// demoAPT demonstrates Adaptive Parameter Tuning features
+func demoAPT() {
+	log.Println("\n=== Adaptive Parameter Tuning (APT) Demonstration ===")
 
-	// Use the fluent API for query options with facet filters
-	options := db.DefaultQueryOptions().
-		WithK(20).
-		WithFacetFilters(facets.NewEqualityFilter("category", "technology"))
+	// Check if APT is enabled
+	log.Println("Checking if APT is enabled...")
+	enabled := adaptive.IsEnabled()
+	log.Printf("APT enabled: %v", enabled)
 
-	// Perform search with filters
-	filteredResults, err := db.Search(queryVector, options)
-	if err != nil {
-		log.Fatalf("Failed to search with filters: %v", err)
+	// Get current parameters
+	log.Println("\nGetting current APT parameters...")
+	if adaptive.DefaultInstance == nil {
+		log.Println("APT DefaultInstance is nil, cannot get parameters")
+	} else {
+		params := adaptive.DefaultInstance.GetCurrentParameters()
+		log.Printf("Current parameters: %+v", params)
 	}
 
-	// Display results
-	fmt.Printf("Found %d filtered results\n", len(filteredResults))
-	for i, result := range filteredResults {
-		var doc Document
-		if err := sonic.Unmarshal(result.Metadata, &doc); err != nil {
-			log.Printf("Failed to unmarshal metadata: %v", err)
-			continue
-		}
-		fmt.Printf("  %d. %s (distance: %.4f, category: %s, score: %.2f)\n",
-			i+1, doc.Title, result.Distance, doc.Category, doc.Score)
-	}
-}
-
-// searchWithNegativeExamples performs a search with negative examples
-func searchWithNegativeExamples(db *db.VectorDB[string]) {
-	// Create random vectors for search
-	queryVector := generateRandomVector(DIMS)
-	negativeVector := generateRandomVector(DIMS)
-
-	// Use the fluent API for query options with negative examples
-	options := db.DefaultQueryOptions().
-		WithK(5).
-		WithNegativeExample(negativeVector).
-		WithNegativeWeight(0.3)
-
-	// Perform search with negative examples
-	negativeResults, err := db.Search(queryVector, options)
-	if err != nil {
-		log.Fatalf("Failed to search with negative example: %v", err)
+	// Get workload analysis
+	log.Println("\nGetting workload analysis...")
+	if adaptive.DefaultInstance == nil {
+		log.Println("APT DefaultInstance is nil, cannot get workload analysis")
+	} else {
+		analysis := adaptive.DefaultInstance.GetWorkloadAnalysis()
+		log.Printf("Workload analysis: %+v", analysis)
 	}
 
-	// Display results
-	fmt.Printf("Found %d results with negative example\n", len(negativeResults))
-	for i, result := range negativeResults {
-		var doc Document
-		if err := sonic.Unmarshal(result.Metadata, &doc); err != nil {
-			log.Printf("Failed to unmarshal metadata: %v", err)
-			continue
-		}
-		fmt.Printf("  %d. %s (distance: %.4f, category: %s)\n", i+1, doc.Title, result.Distance, doc.Category)
-	}
-}
-
-// deleteVectors deletes a batch of vectors from the database
-func deleteVectors(db *db.VectorDB[string]) {
-	// Create a list of keys to delete
-	deleteKeys := make([]string, 100)
-	for i := 0; i < 100; i++ {
-		deleteKeys[i] = fmt.Sprintf("%d", i)
+	// Get performance report
+	log.Println("\nGetting performance report...")
+	if adaptive.DefaultInstance == nil {
+		log.Println("APT DefaultInstance is nil, cannot get performance report")
+	} else {
+		report := adaptive.DefaultInstance.GetPerformanceReport()
+		log.Printf("Performance report: %+v", report)
 	}
 
-	// Delete the vectors
-	deleteResults := db.BatchDelete(deleteKeys)
+	// Demonstrate enabling/disabling APT
+	log.Println("\nDemonstrating enabling/disabling APT...")
+	log.Println("Disabling APT...")
+	adaptive.SetEnabled(false)
+	log.Printf("APT enabled: %v", adaptive.IsEnabled())
 
-	// Count successful deletions
-	successCount := 0
-	for _, success := range deleteResults {
-		if success {
-			successCount++
-		}
-	}
-	fmt.Printf("Successfully deleted %d/%d vectors\n", successCount, len(deleteKeys))
-}
+	log.Println("Re-enabling APT...")
+	adaptive.SetEnabled(true)
+	log.Printf("APT enabled: %v", adaptive.IsEnabled())
 
-// displayStats displays the database statistics
-func displayStats(db *db.VectorDB[string]) {
-	// Get database statistics
-	stats := db.GetStats()
-
-	// Display statistics
-	fmt.Printf("  Vector count: %d\n", stats.VectorCount)
-	// Use the hybrid index type from the stats
-	hybridType := hybrid.HybridIndexType // Default value if not available
-	fmt.Printf("  Index type: %s\n", indexTypeToString(hybridType))
-}
-
-// simpleSearchOnDB performs a simple search on the specified database
-func simpleSearchOnDB(db *db.VectorDB[string]) {
-	// Create a random vector for search
-	vector := make([]float32, DIMS)
-	for i := range vector {
-		vector[i] = rand.Float32()
-	}
-
-	// Use the fluent API for query options
-	options := db.DefaultQueryOptions().WithK(5)
-
-	// Perform search
-	results, err := db.Search(vector, options)
-	if err != nil {
-		log.Fatalf("Failed to search: %v", err)
-	}
-
-	// Display results
-	fmt.Printf("Found %d results:\n", len(results))
-	for i, result := range results {
-		var doc Document
-		if err := sonic.Unmarshal(result.Metadata, &doc); err != nil {
-			log.Printf("Failed to unmarshal metadata: %v", err)
-			continue
-		}
-
-		fmt.Printf("  %d. Key: %s, Distance: %.4f\n", i+1, result.Key, result.Distance)
-		fmt.Printf("     Category: %s\n", doc.Category)
-		if len(result.Facets) > 0 {
-			fmt.Printf("     Facets: %+v\n", result.Facets)
-		}
-	}
+	log.Println("APT demonstration completed")
 }

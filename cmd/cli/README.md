@@ -288,26 +288,6 @@ This allows Quiver to run on various hardware platforms, including:
 - ARM64 servers (AWS Graviton, Oracle Ampere, etc.)
 - Raspberry Pi and other ARM devices
 
-### Configuration with Docker
-
-When running Quiver in Docker, you can configure it using environment variables:
-
-```bash
-docker run -d \
-  --name quiver \
-  -p 8080:8080 \
-  -v quiver_data:/app/data \
-  -e QUIVER_SERVER_PORT=8080 \
-  -e QUIVER_SERVER_HOST=0.0.0.0 \
-  -e QUIVER_SERVER_STORAGE=/app/data \
-  -e QUIVER_INDEX_DIMENSION=256 \
-  -e QUIVER_INDEX_MAX_ELEMENTS=2000000 \
-  -e QUIVER_INDEX_DISTANCE=l2 \
-  -e QUIVER_INDEX_HNSW_M=16 \
-  -e QUIVER_INDEX_HNSW_EF_SEARCH=100 \
-  quiver:latest
-```
-
 ### Interacting with Dockerized Quiver
 
 You can interact with the Quiver API running in Docker using the CLI:
@@ -328,7 +308,3 @@ The provided docker-compose.yml file is suitable for both development and produc
 - Environment variable configuration
 - Health checks
 - Automatic restart policy
-
-## License
-
-This project is licensed under the same license as the Quiver project.
