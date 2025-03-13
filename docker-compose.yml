@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  quiver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quiver
+    ports:
+      - "8080:8080"
+    volumes:
+      - quiver_data:/app/data
+    environment:
+      - QUIVER_SERVER_PORT=8080
+      - QUIVER_SERVER_HOST=0.0.0.0
+      - QUIVER_SERVER_STORAGE=/app/data
+      - QUIVER_INDEX_DIMENSION=128
+      - QUIVER_INDEX_MAX_ELEMENTS=1000000
+      - QUIVER_INDEX_DISTANCE=cosine
+      - QUIVER_INDEX_HNSW_M=16
+      - QUIVER_INDEX_HNSW_EF_SEARCH=100
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  quiver_data:
+    driver: local
