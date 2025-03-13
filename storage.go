@@ -13,6 +13,7 @@ import (
 	"github.com/TFMV/hnsw/hnsw-extensions/facets"
 	"github.com/TFMV/hnsw/hnsw-extensions/meta"
 	"github.com/TFMV/hnsw/hnsw-extensions/parquet"
+	"github.com/bytedance/sonic"
 )
 
 // PersistentStorage provides persistent storage for the vector database
@@ -79,13 +80,13 @@ func (ps *PersistentStorage[K]) SaveMetadata(key K, metadata json.RawMessage) er
 		}
 
 		// Parse existing metadata
-		if err := json.Unmarshal(data, &metadataMap); err != nil {
+		if err := sonic.Unmarshal(data, &metadataMap); err != nil {
 			return fmt.Errorf("failed to parse metadata: %w", err)
 		}
 	}
 
 	// Convert key to string
-	keyBytes, err := json.Marshal(key)
+	keyBytes, err := sonic.Marshal(key)
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
 	}
@@ -95,7 +96,7 @@ func (ps *PersistentStorage[K]) SaveMetadata(key K, metadata json.RawMessage) er
 	metadataMap[keyStr] = metadata
 
 	// Serialize to JSON
-	data, err := json.Marshal(metadataMap)
+	data, err := sonic.Marshal(metadataMap)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
@@ -129,7 +130,7 @@ func (ps *PersistentStorage[K]) BatchSaveMetadata(keys []K, metadataList []json.
 		}
 
 		// Parse existing metadata
-		if err := json.Unmarshal(data, &metadataMap); err != nil {
+		if err := sonic.Unmarshal(data, &metadataMap); err != nil {
 			return fmt.Errorf("failed to parse metadata: %w", err)
 		}
 	}
@@ -141,7 +142,7 @@ func (ps *PersistentStorage[K]) BatchSaveMetadata(keys []K, metadataList []json.
 		}
 
 		// Convert key to string
-		keyBytes, err := json.Marshal(key)
+		keyBytes, err := sonic.Marshal(key)
 		if err != nil {
 			return fmt.Errorf("failed to marshal key: %w", err)
 		}
@@ -152,7 +153,7 @@ func (ps *PersistentStorage[K]) BatchSaveMetadata(keys []K, metadataList []json.
 	}
 
 	// Serialize to JSON
-	data, err := json.Marshal(metadataMap)
+	data, err := sonic.Marshal(metadataMap)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
@@ -184,7 +185,7 @@ func (ps *PersistentStorage[K]) LoadMetadata() (*meta.MemoryMetadataStore[K], er
 
 	// Parse metadata
 	var metadataMap map[string]json.RawMessage
-	if err := json.Unmarshal(data, &metadataMap); err != nil {
+	if err := sonic.Unmarshal(data, &metadataMap); err != nil {
 		return nil, fmt.Errorf("failed to parse metadata: %w", err)
 	}
 
@@ -195,7 +196,7 @@ func (ps *PersistentStorage[K]) LoadMetadata() (*meta.MemoryMetadataStore[K], er
 	for keyStr, metadata := range metadataMap {
 		// Convert string key to K
 		var key K
-		if err := json.Unmarshal([]byte(keyStr), &key); err != nil {
+		if err := sonic.Unmarshal([]byte(keyStr), &key); err != nil {
 			return nil, fmt.Errorf("failed to parse key: %w", err)
 		}
 
@@ -243,7 +244,7 @@ func (ps *PersistentStorage[K]) SaveFacets(facetedNode facets.FacetedNode[K]) er
 	}
 
 	// Convert key to string
-	keyBytes, err := json.Marshal(facetedNode.Node.Key)
+	keyBytes, err := sonic.Marshal(facetedNode.Node.Key)
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
 	}
@@ -266,7 +267,7 @@ func (ps *PersistentStorage[K]) SaveFacets(facetedNode facets.FacetedNode[K]) er
 	})
 
 	// Serialize to JSON
-	data, err := json.Marshal(facetsList)
+	data, err := sonic.Marshal(facetsList)
 	if err != nil {
 		return fmt.Errorf("failed to marshal facets: %w", err)
 	}
@@ -316,7 +317,7 @@ func (ps *PersistentStorage[K]) BatchSaveFacets(facetedNodes []facets.FacetedNod
 	// Add new facets
 	for _, facetedNode := range facetedNodes {
 		// Convert key to string
-		keyBytes, err := json.Marshal(facetedNode.Node.Key)
+		keyBytes, err := sonic.Marshal(facetedNode.Node.Key)
 		if err != nil {
 			return fmt.Errorf("failed to marshal key: %w", err)
 		}
@@ -340,7 +341,7 @@ func (ps *PersistentStorage[K]) BatchSaveFacets(facetedNodes []facets.FacetedNod
 	}
 
 	// Serialize to JSON
-	data, err := json.Marshal(facetsList)
+	data, err := sonic.Marshal(facetsList)
 	if err != nil {
 		return fmt.Errorf("failed to marshal facets: %w", err)
 	}
@@ -384,7 +385,7 @@ func (ps *PersistentStorage[K]) LoadFacets() (*facets.MemoryFacetStore[K], error
 
 	// Parse facets
 	var facetsList []SerializableNode
-	if err := json.Unmarshal(data, &facetsList); err != nil {
+	if err := sonic.Unmarshal(data, &facetsList); err != nil {
 		return nil, fmt.Errorf("failed to parse facets: %w", err)
 	}
 
@@ -395,7 +396,7 @@ func (ps *PersistentStorage[K]) LoadFacets() (*facets.MemoryFacetStore[K], error
 	for _, item := range facetsList {
 		// Convert string key to K
 		var key K
-		if err := json.Unmarshal([]byte(item.Key), &key); err != nil {
+		if err := sonic.Unmarshal([]byte(item.Key), &key); err != nil {
 			return nil, fmt.Errorf("failed to parse key: %w", err)
 		}
 

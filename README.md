@@ -18,13 +18,13 @@ Quiver is a Go-based vector database that combines the best of HNSW (Hierarchica
 
 Quiver offers three powerful index types to suit different use cases:
 
-1. **HNSW**: The classic HNSW graph implementation, offering a great balance of speed and recall for most use cases.
+1. **HNSW Index**: The classic HNSW (Hierarchical Navigable Small World) graph implementation. This in-memory index offers a great balance of speed and recall for most use cases. It's fast, memory-efficient, and perfect for medium-sized datasets.
 
-2. **Parquet**: A persistent storage-backed HNSW implementation that efficiently stores vectors in Parquet format, ideal for larger datasets that need durability.
+2. **HNSW with Parquet Storage**: This is not a separate index type, but rather an HNSW index backed by Parquet storage. It efficiently persists vectors to disk in Parquet format, making it ideal for larger datasets that need durability while maintaining the performance characteristics of HNSW.
 
-3. **Hybrid**: Our most advanced index type that combines multiple search strategies (HNSW, exact search, LSH) to optimize for both speed and recall, automatically selecting the best approach based on your data.
+3. **Hybrid Index**: Our most advanced index type that combines multiple search strategies to optimize for both speed and recall. It can automatically select between exact search (for small datasets) and approximate search (for larger datasets), and includes optimizations for different query patterns. The hybrid index is particularly effective for datasets with varying sizes and query patterns.
 
-Choose the right index type for your needs and let APT optimize your parameters automatically!
+All index types support the full range of Quiver features, including faceted search, metadata filtering, and negative examples. Choose the right index type for your needs and let APT optimize your parameters automatically!
 
 ## Why Choose Quiver?
 
@@ -87,14 +87,15 @@ func SearchWithComplexOptions(database *db.VectorDB[uint64]) {
 ## Tips for Best Performance
 
 1. **Choose the Right Index Type**:
-   - Small dataset (<1000 vectors)? Use `ExactIndexType` for perfect recall
-   - Medium dataset? Use `HNSWIndexType` for a good balance
-   - Large dataset? Use `HybridIndexType` for optimal performance
+   - Small dataset (<1000 vectors)? Use the Hybrid index with a low ExactThreshold for perfect recall
+   - Medium dataset? Use the HNSW index for a good balance of speed and recall
+   - Large dataset with durability needs? Use HNSW with Parquet storage
+   - Complex workloads with varying query patterns? Use the Hybrid index
 
-2. **Tune Your EfSearch Parameter**:
-   - Higher values = more accurate but slower
-   - Lower values = faster but potentially less accurate
-   - Start with the default and adjust based on your needs
+2. **Tune Your Parameters** (or let APT do it for you):
+   - M: Controls the number of connections per node (higher = more accurate but more memory)
+   - EfSearch: Controls search depth (higher = more accurate but slower)
+   - EfConstruction: Controls index build quality (higher = better index but slower construction)
 
 3. **Use Batch Operations**:
    - Always prefer `BatchAdd` over multiple `Add` calls
