@@ -6,7 +6,7 @@ Welcome to the **Quiver Example** - your comprehensive guide to using Quiver, th
 
 This example is a **complete showcase** of Quiver's capabilities, including:
 
-- **All three index types**: HNSW, Parquet, and Hybrid
+- **All index types**: HNSW, HNSW with Parquet storage, and Hybrid
 - **Advanced search techniques**: Standard similarity search, negative examples, facet filtering, and metadata filtering
 - **Batch operations**: Adding and deleting vectors in batches for maximum performance
 - **Backup and restore**: Keeping your vector data safe
@@ -15,11 +15,11 @@ This example is a **complete showcase** of Quiver's capabilities, including:
 
 ## 🧠 Index Types Explained
 
-Quiver offers three powerful index types, each with its own strengths:
+Quiver offers three powerful index configurations, each with its own strengths:
 
 ### 1. HNSW Index
 
-The classic HNSW (Hierarchical Navigable Small World) graph implementation. It's fast, memory-efficient, and offers a great balance of speed and recall.
+The classic HNSW (Hierarchical Navigable Small World) graph implementation. This in-memory index offers a great balance of speed and recall for most use cases. It's fast, memory-efficient, and perfect for medium-sized datasets.
 
 ```go
 config := quiver.DefaultDBConfig()
@@ -28,19 +28,19 @@ config.Hybrid.M = 16         // Number of connections per node
 config.Hybrid.EfSearch = 100 // Query time search depth
 ```
 
-### 2. Parquet Index
+### 2. HNSW with Parquet Storage
 
-A persistent storage-backed HNSW implementation that efficiently stores vectors in Parquet format. Perfect for larger datasets that need durability.
+This is not a separate index type, but rather an HNSW index backed by Parquet storage. It efficiently persists vectors to disk in Parquet format, making it ideal for larger datasets that need durability while maintaining the performance characteristics of HNSW.
 
 ```go
 config := quiver.DefaultDBConfig()
 config.Hybrid.Type = hybrid.HNSWIndexType
-config.Parquet.Directory = "/path/to/parquet/data"
+config.Parquet.Directory = "/path/to/parquet/data" // Enables Parquet storage
 ```
 
 ### 3. Hybrid Index
 
-Our most advanced index type that combines multiple search strategies (HNSW, exact search, LSH) to optimize for both speed and recall, automatically selecting the best approach based on your data.
+Our most advanced index type that combines multiple search strategies to optimize for both speed and recall. It can automatically select between exact search (for small datasets) and approximate search (for larger datasets), and includes optimizations for different query patterns.
 
 ```go
 config := quiver.DefaultDBConfig()
@@ -142,13 +142,13 @@ Quiver's APT system automatically optimizes HNSW parameters based on your worklo
 enabled := adaptive.IsEnabled()
 
 // Get current parameters
-params := adaptive.GetCurrentParameters()
+params := adaptive.DefaultInstance.GetCurrentParameters()
 
 // Get workload analysis
-analysis := adaptive.GetWorkloadAnalysis()
+analysis := adaptive.DefaultInstance.GetWorkloadAnalysis()
 
 // Get performance report
-report := adaptive.GetPerformanceReport()
+report := adaptive.DefaultInstance.GetPerformanceReport()
 
 // Enable or disable APT
 adaptive.SetEnabled(true)
@@ -165,7 +165,7 @@ go run main.go
 The example will:
 
 1. Initialize Quiver with APT enabled
-2. Demonstrate all three index types
+2. Demonstrate all three index configurations
 3. Show various search techniques
 4. Demonstrate batch operations
 5. Show backup and restore functionality

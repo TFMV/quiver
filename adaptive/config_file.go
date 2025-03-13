@@ -3,7 +3,6 @@ package adaptive
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"time"
@@ -122,7 +121,7 @@ func LoadConfigFile(configDir string) (*ConfigFile, error) {
 	}
 
 	// Read config file
-	data, err := ioutil.ReadFile(configFile)
+	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return config, err
 	}
@@ -150,7 +149,7 @@ func SaveConfigFile(config *ConfigFile, configDir string) error {
 
 	// Write config file
 	configFile := filepath.Join(configDir, "apt.json")
-	return ioutil.WriteFile(configFile, data, 0644)
+	return os.WriteFile(configFile, data, 0644)
 }
 
 // ToIntegrationConfig converts a ConfigFile to an IntegrationConfig

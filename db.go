@@ -18,6 +18,7 @@ import (
 	"github.com/TFMV/hnsw/hnsw-extensions/hybrid"
 	"github.com/TFMV/hnsw/hnsw-extensions/meta"
 	"github.com/TFMV/hnsw/hnsw-extensions/parquet"
+	"github.com/bytedance/sonic"
 )
 
 // VectorDB is a high-performance vector database
@@ -442,7 +443,7 @@ func (db *VectorDB[K]) Add(key K, vector []float32, metadata interface{}, facetL
 			}
 			rawMetadata = json.RawMessage(m)
 		default:
-			rawMetadata, err = json.Marshal(metadata)
+			rawMetadata, err = sonic.Marshal(metadata)
 			if err != nil {
 				return fmt.Errorf("failed to marshal metadata: %w", err)
 			}
@@ -531,7 +532,7 @@ func (db *VectorDB[K]) BatchAdd(keys []K, vectors [][]float32, metadataList []in
 				}
 				rawMetadata = json.RawMessage(m)
 			default:
-				rawMetadata, err = json.Marshal(metadata)
+				rawMetadata, err = sonic.Marshal(metadata)
 				if err != nil {
 					return fmt.Errorf("failed to marshal metadata: %w", err)
 				}
@@ -807,7 +808,7 @@ func (db *VectorDB[K]) Backup(backupDir string) error {
 	// Convert config to serializable format
 	serializableConfig := db.config.toSerializable()
 
-	configData, err := json.MarshalIndent(serializableConfig, "", "  ")
+	configData, err := sonic.MarshalIndent(serializableConfig, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal configuration: %w", err)
 	}
@@ -817,7 +818,7 @@ func (db *VectorDB[K]) Backup(backupDir string) error {
 
 	// Create a backup statistics file
 	statsFile := filepath.Join(backupDir, "stats.json")
-	statsData, err := json.MarshalIndent(db.stats, "", "  ")
+	statsData, err := sonic.MarshalIndent(db.stats, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal statistics: %w", err)
 	}
@@ -852,7 +853,7 @@ func (db *VectorDB[K]) Restore(backupDir string) error {
 
 	// Parse serializable config
 	var serializableConfig SerializableDBConfig
-	if err := json.Unmarshal(configData, &serializableConfig); err != nil {
+	if err := sonic.Unmarshal(configData, &serializableConfig); err != nil {
 		return fmt.Errorf("failed to unmarshal configuration: %w", err)
 	}
 
@@ -867,7 +868,7 @@ func (db *VectorDB[K]) Restore(backupDir string) error {
 			return fmt.Errorf("failed to read statistics file: %w", err)
 		}
 		var stats DBStats
-		if err := json.Unmarshal(statsData, &stats); err != nil {
+		if err := sonic.Unmarshal(statsData, &stats); err != nil {
 			return fmt.Errorf("failed to unmarshal statistics: %w", err)
 		}
 		db.stats = stats

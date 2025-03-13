@@ -4,7 +4,6 @@ package adaptive
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -254,9 +253,9 @@ func (cm *ConfigurationManager) persistConfigurations() error {
 			fmt.Sprintf("parameters.%s.json", time.Now().Format("20060102-150405")))
 
 		// Copy file
-		data, err := ioutil.ReadFile(configFile)
+		data, err := os.ReadFile(configFile)
 		if err == nil {
-			ioutil.WriteFile(backupFile, data, 0644)
+			os.WriteFile(backupFile, data, 0644)
 		}
 
 		// Clean up old backups
@@ -270,7 +269,7 @@ func (cm *ConfigurationManager) persistConfigurations() error {
 	}
 
 	// Write to file
-	return ioutil.WriteFile(configFile, data, 0644)
+	return os.WriteFile(configFile, data, 0644)
 }
 
 // loadConfigurations loads configurations from disk
@@ -283,7 +282,7 @@ func (cm *ConfigurationManager) loadConfigurations() error {
 	}
 
 	// Read file
-	data, err := ioutil.ReadFile(configFile)
+	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return err
 	}
