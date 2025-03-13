@@ -1,50 +1,66 @@
-FROM --platform=linux/arm64 golang:1.24-bookworm
+# Build stage
+FROM golang:1.24-alpine AS builder
 
+# Install build dependencies
+RUN apk add --no-cache git build-base
+
+# Set working directory
 WORKDIR /app
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    pkg-config \
-    git \
-    unzip \
-    wget \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set up DuckDB library for ARM64
-RUN wget https://github.com/duckdb/duckdb/releases/download/v0.10.0/libduckdb-linux-aarch64.zip \
-    && unzip libduckdb-linux-aarch64.zip -d /usr/lib/ \
-    && ln -s /usr/lib/libduckdb.so /usr/lib/libduckdb.so.0 \
-    && mkdir -p /usr/local/lib \
-    && ln -s /usr/lib/libduckdb.so /usr/local/lib/libduckdb.so \
-    && ln -s /usr/lib/libduckdb.so /usr/local/lib/libduckdb.so.0
-
-# Copy and build the application
+# Copy go.mod and go.sum files
 COPY go.mod go.sum ./
+
+# Download dependencies
 RUN go mod download
 
+# Copy source code
 COPY . .
 
-# Build for ARM64
-RUN echo "Building for ARM64..." && \
-    CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -v -o /app/quiver-server cmd/main.go && \
-    echo "Build complete. Checking binary..." && \
-    ls -la /app/quiver-server && \
-    echo "Binary details complete."
+# Build the application with the correct path
+RUN mkdir -p /app/bin && \
+    CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /app/bin/quiver ./cmd/cli
 
-RUN chmod +x /app/quiver-server
+# Final stage
+FROM alpine:3.18
 
-# Set up environment
-ENV QUIVER_STORAGE_PATH=/data
-ENV QUIVER_BACKUP_PATH=/data/backups
-ENV QUIVER_PORT=8080
-ENV LD_LIBRARY_PATH=/usr/lib:/usr/local/lib
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates tzdata wget
 
-# Create data directories
-RUN mkdir -p /data /backups
+# Create non-root user
+RUN adduser -D -h /app quiver
 
+# Set working directory
+WORKDIR /app
+
+# Copy binary from builder stage
+COPY --from=builder /app/bin/quiver /app/quiver
+
+# Create data directory and set permissions
+RUN mkdir -p /app/data && chown -R quiver:quiver /app
+
+# Switch to non-root user
+USER quiver
+
+# Expose API port
 EXPOSE 8080
 
-VOLUME ["/data", "/backups"]
-CMD ["/app/quiver-server", "serve"]
+# Set volume for persistent data
+VOLUME ["/app/data"]
+
+# Set environment variables
+ENV QUIVER_SERVER_PORT=8080
+ENV QUIVER_SERVER_HOST=0.0.0.0
+ENV QUIVER_SERVER_STORAGE=/app/data
+ENV QUIVER_INDEX_DIMENSION=128
+ENV QUIVER_INDEX_MAX_ELEMENTS=1000000
+ENV QUIVER_INDEX_DISTANCE=cosine
+
+# Set entrypoint
+ENTRYPOINT ["/app/quiver"]
+
+# Set default command
+CMD ["server", "--port", "8080", "--storage", "/app/data"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget -qO- http://localhost:8080/health || exit 1 
