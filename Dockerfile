@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git build-base
@@ -16,14 +16,15 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o quiver ./quiver/cmd/cli
+# Build the application with the correct path
+RUN mkdir -p /app/bin && \
+    CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /app/bin/quiver ./cmd/cli
 
 # Final stage
 FROM alpine:3.18
 
 # Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata wget
 
 # Create non-root user
 RUN adduser -D -h /app quiver
@@ -32,7 +33,7 @@ RUN adduser -D -h /app quiver
 WORKDIR /app
 
 # Copy binary from builder stage
-COPY --from=builder /app/quiver /app/quiver
+COPY --from=builder /app/bin/quiver /app/quiver
 
 # Create data directory and set permissions
 RUN mkdir -p /app/data && chown -R quiver:quiver /app

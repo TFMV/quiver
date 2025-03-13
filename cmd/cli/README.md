@@ -238,12 +238,12 @@ quiver version
 
 ## Docker Support
 
-Quiver can be easily deployed using Docker.
+Quiver can be easily deployed using Docker. The provided Dockerfile and docker-compose.yml files follow modern Docker and Go best practices.
 
 ### Building the Docker Image
 
 ```bash
-docker build -t quiver:latest .
+docker build -t quiver:latest -f quiver/Dockerfile .
 ```
 
 ### Running with Docker
@@ -263,6 +263,30 @@ docker run -d \
 ```bash
 docker-compose up -d
 ```
+
+### Multi-Architecture Support
+
+Quiver Docker images can be built for multiple architectures (amd64, arm64, etc.) using the provided `build-multiarch.sh` script:
+
+```bash
+# Build for multiple architectures
+./build-multiarch.sh
+
+# Build with custom name and tag
+./build-multiarch.sh --name myorg/quiver --tag v1.0.0
+
+# Build and push to a registry
+./build-multiarch.sh --push
+
+# Build for specific platforms
+./build-multiarch.sh --platforms linux/amd64,linux/arm64,linux/arm/v7
+```
+
+This allows Quiver to run on various hardware platforms, including:
+
+- x86_64 / amd64 servers
+- ARM64 servers (AWS Graviton, Oracle Ampere, etc.)
+- Raspberry Pi and other ARM devices
 
 ### Configuration with Docker
 
@@ -304,3 +328,7 @@ The provided docker-compose.yml file is suitable for both development and produc
 - Environment variable configuration
 - Health checks
 - Automatic restart policy
+
+## License
+
+This project is licensed under the same license as the Quiver project.

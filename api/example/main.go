@@ -39,7 +39,7 @@ func setupLogger(debug bool) *zap.Logger {
 
 func main() {
 	// Parse command line flags
-	port := flag.String("port", "8080", "Port to listen on")
+	port := flag.String("port", "5555", "Port to listen on")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	storagePath := flag.String("storage-path", "./data", "Path to store index data")
 	flag.Parse()
