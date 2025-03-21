@@ -14,11 +14,26 @@ import (
 	"time"
 
 	"github.com/TFMV/hnsw"
+	"github.com/TFMV/hnsw/hnsw-extensions/arrow"
 	"github.com/TFMV/hnsw/hnsw-extensions/facets"
 	"github.com/TFMV/hnsw/hnsw-extensions/hybrid"
 	"github.com/TFMV/hnsw/hnsw-extensions/meta"
 	"github.com/TFMV/hnsw/hnsw-extensions/parquet"
 	"github.com/bytedance/sonic"
+)
+
+// IndexType for Quiver
+type IndexType string
+
+const (
+	// HNSWIndexType is the classic HNSW index
+	HNSWIndexType IndexType = "hnsw"
+	// ParquetIndexType is HNSW with Parquet storage
+	ParquetIndexType IndexType = "parquet"
+	// HybridIndexType combines multiple search strategies
+	HybridIndexType IndexType = "hybrid"
+	// ArrowIndexType is the Arrow-native HNSW index
+	ArrowIndexType IndexType = "arrow"
 )
 
 // VectorDB is a high-performance vector database
@@ -53,11 +68,17 @@ type DBConfig struct {
 	// Base directory for storage
 	BaseDir string
 
+	// Storage type (e.g., "parquet", "duckdb")
+	Storage string
+
 	// Hybrid index configuration
 	Hybrid hybrid.IndexConfig
 
 	// Parquet storage configuration (if using parquet)
 	Parquet parquet.ParquetStorageConfig
+
+	// Arrow index configuration (if using arrow)
+	Arrow arrow.ArrowGraphConfig
 
 	// Cache configuration
 	CacheSize int // Maximum number of vectors to cache in memory
@@ -68,12 +89,18 @@ type DBConfig struct {
 
 	// Analytics configuration
 	EnableAnalytics bool // Whether to collect and store analytics data
+
+	// Index type - used to explicitly specify the index type
+	IndexType string
 }
 
 // SerializableDBConfig is a serializable version of DBConfig for backup/restore
 type SerializableDBConfig struct {
 	// Base directory for storage
 	BaseDir string `json:"base_dir"`
+
+	// Storage type (e.g., "parquet", "duckdb")
+	Storage string `json:"storage"`
 
 	// Hybrid index configuration (without DistanceFunc)
 	Hybrid struct {
@@ -88,6 +115,9 @@ type SerializableDBConfig struct {
 	// Parquet storage configuration
 	Parquet parquet.ParquetStorageConfig `json:"parquet"`
 
+	// Arrow configuration
+	Arrow arrow.ArrowGraphConfig `json:"arrow"`
+
 	// Cache configuration
 	CacheSize int `json:"cache_size"`
 
@@ -97,19 +127,23 @@ type SerializableDBConfig struct {
 
 	// Analytics configuration
 	EnableAnalytics bool `json:"enable_analytics"`
+
+	// Index type
+	IndexType string `json:"index_type"`
 }
 
 // toSerializable converts DBConfig to SerializableDBConfig
 func (c DBConfig) toSerializable() SerializableDBConfig {
 	var sc SerializableDBConfig
 	sc.BaseDir = c.BaseDir
+	sc.Storage = c.Storage
 	sc.Hybrid.Type = c.Hybrid.Type
 	sc.Hybrid.M = c.Hybrid.M
 	sc.Hybrid.Ml = c.Hybrid.Ml
 	sc.Hybrid.EfSearch = c.Hybrid.EfSearch
+	sc.IndexType = c.IndexType
 
 	// Convert distance function to name based on function pointer
-	// Since we can't directly compare function pointers, use a different approach
 	if c.Hybrid.Distance != nil {
 		// Get the function name through reflection
 		distFuncName := fmt.Sprintf("%T", c.Hybrid.Distance)
@@ -134,6 +168,10 @@ func (c DBConfig) toSerializable() SerializableDBConfig {
 	}
 
 	sc.Parquet = c.Parquet
+
+	// Set Arrow configuration
+	sc.Arrow = c.Arrow
+
 	sc.CacheSize = c.CacheSize
 	sc.MaxConcurrentQueries = c.MaxConcurrentQueries
 	sc.QueryTimeout = c.QueryTimeout
@@ -146,10 +184,12 @@ func (c DBConfig) toSerializable() SerializableDBConfig {
 func (sc SerializableDBConfig) toDBConfig() DBConfig {
 	var c DBConfig
 	c.BaseDir = sc.BaseDir
+	c.Storage = sc.Storage
 	c.Hybrid.Type = sc.Hybrid.Type
 	c.Hybrid.M = sc.Hybrid.M
 	c.Hybrid.Ml = sc.Hybrid.Ml
 	c.Hybrid.EfSearch = sc.Hybrid.EfSearch
+	c.IndexType = sc.IndexType
 
 	// Convert distance name to function
 	switch sc.Hybrid.DistanceName {
@@ -185,6 +225,11 @@ func (sc SerializableDBConfig) toDBConfig() DBConfig {
 	}
 
 	c.Parquet = sc.Parquet
+	c.Arrow = sc.Arrow
+
+	// Make sure Arrow config has distance function
+	c.Arrow.Distance = c.Hybrid.Distance
+
 	c.CacheSize = sc.CacheSize
 	c.MaxConcurrentQueries = sc.MaxConcurrentQueries
 	c.QueryTimeout = sc.QueryTimeout
@@ -193,16 +238,29 @@ func (sc SerializableDBConfig) toDBConfig() DBConfig {
 	return c
 }
 
-// DefaultDBConfig returns the default configuration for Quiver
+// DefaultDBConfig returns a default configuration
 func DefaultDBConfig() DBConfig {
 	return DBConfig{
-		BaseDir:              "vectordb_data",
-		Hybrid:               hybrid.DefaultIndexConfig(),
-		Parquet:              parquet.DefaultParquetStorageConfig(),
+		BaseDir: "vectordb_data",
+		Storage: StorageTypeParquet, // Default to Parquet storage
+		Hybrid: hybrid.IndexConfig{
+			Type:     hybrid.HNSWIndexType,
+			M:        32,                  // Default connections per node
+			Ml:       0.6,                 // Default level multiplier
+			EfSearch: 100,                 // Default search time accuracy parameter
+			Distance: hnsw.CosineDistance, // Default distance function
+		},
+		Parquet: parquet.DefaultParquetStorageConfig(),
+		Arrow: arrow.ArrowGraphConfig{
+			M:        32,
+			Ml:       0.6,
+			EfSearch: 100,
+			Distance: hnsw.CosineDistance,
+		},
 		CacheSize:            10000,
 		MaxConcurrentQueries: 10,
-		QueryTimeout:         time.Second * 30,
-		EnableAnalytics:      true,
+		QueryTimeout:         30 * time.Second,
+		IndexType:            string(HNSWIndexType),
 	}
 }
 
@@ -333,47 +391,66 @@ func NewVectorDB[K cmp.Ordered](config DBConfig) (*VectorDB[K], error) {
 	// Create the appropriate index based on configuration
 	var adapter *IndexAdapter[K]
 
-	switch config.Hybrid.Type {
-	case hybrid.HybridIndexType:
-		// Create a hybrid index
-		hybridIndex, err := hybrid.NewHybridIndex[K](config.Hybrid)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create hybrid index: %w", err)
-		}
-		adapter = NewHybridAdapter(hybridIndex)
+	// Check explicit index type first
+	switch config.IndexType {
+	case "arrow":
+		// Create an Arrow index directly
+		// Copy relevant parameters for consistency
+		config.Arrow.M = config.Hybrid.M
+		config.Arrow.Ml = config.Hybrid.Ml
+		config.Arrow.EfSearch = config.Hybrid.EfSearch
+		config.Arrow.Distance = config.Hybrid.Distance
 
-	case hybrid.HNSWIndexType:
-		// If using HNSW with Parquet, create a ParquetGraph
-		if config.Parquet.Directory != "" {
-			pgConfig := parquet.ParquetGraphConfig{
-				M:        config.Hybrid.M,
-				Ml:       config.Hybrid.Ml,
-				EfSearch: config.Hybrid.EfSearch,
-				Distance: config.Hybrid.Distance,
-				Storage:  config.Parquet,
-			}
-			pg, err := parquet.NewParquetGraph[K](pgConfig)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create parquet graph: %w", err)
-			}
-			adapter = NewParquetAdapter(pg)
-		} else {
-			// Otherwise, create a standard HNSW graph
-			graph := hnsw.NewGraph[K]()
-			graph.M = config.Hybrid.M
-			graph.Ml = config.Hybrid.Ml
-			graph.EfSearch = config.Hybrid.EfSearch
-			graph.Distance = config.Hybrid.Distance
-			adapter = NewHNSWAdapter(graph)
+		arrowIndex, err := arrow.NewArrowIndex[K](config.Arrow)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create arrow index: %w", err)
 		}
+		adapter = NewArrowAdapter(arrowIndex)
 
 	default:
-		// Default to hybrid index
-		hybridIndex, err := hybrid.NewHybridIndex[K](config.Hybrid)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create hybrid index: %w", err)
+		// If no explicit index type, use Hybrid.Type to determine
+		switch config.Hybrid.Type {
+		case hybrid.HybridIndexType:
+			// Create a hybrid index
+			hybridIndex, err := hybrid.NewHybridIndex[K](config.Hybrid)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create hybrid index: %w", err)
+			}
+			adapter = NewHybridAdapter(hybridIndex)
+
+		case hybrid.HNSWIndexType:
+			// Check for Parquet storage
+			if config.Parquet.Directory != "" {
+				pgConfig := parquet.ParquetGraphConfig{
+					M:        config.Hybrid.M,
+					Ml:       config.Hybrid.Ml,
+					EfSearch: config.Hybrid.EfSearch,
+					Distance: config.Hybrid.Distance,
+					Storage:  config.Parquet,
+				}
+				pg, err := parquet.NewParquetGraph[K](pgConfig)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create parquet graph: %w", err)
+				}
+				adapter = NewParquetAdapter(pg)
+			} else {
+				// Otherwise, create a standard HNSW graph
+				graph := hnsw.NewGraph[K]()
+				graph.M = config.Hybrid.M
+				graph.Ml = config.Hybrid.Ml
+				graph.EfSearch = config.Hybrid.EfSearch
+				graph.Distance = config.Hybrid.Distance
+				adapter = NewHNSWAdapter(graph)
+			}
+
+		default:
+			// Default to hybrid index
+			hybridIndex, err := hybrid.NewHybridIndex[K](config.Hybrid)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create hybrid index: %w", err)
+			}
+			adapter = NewHybridAdapter(hybridIndex)
 		}
-		adapter = NewHybridAdapter(hybridIndex)
 	}
 
 	// Create metadata store
@@ -908,47 +985,66 @@ func (db *VectorDB[K]) Restore(backupDir string) error {
 	// This is necessary because the index is in-memory and needs to be rebuilt
 	var adapter *IndexAdapter[K]
 
-	switch config.Hybrid.Type {
-	case hybrid.HybridIndexType:
-		// Create a hybrid index
-		hybridIndex, err := hybrid.NewHybridIndex[K](config.Hybrid)
-		if err != nil {
-			return fmt.Errorf("failed to create hybrid index: %w", err)
-		}
-		adapter = NewHybridAdapter(hybridIndex)
+	// Check explicit index type first
+	switch config.IndexType {
+	case "arrow":
+		// Create an Arrow index directly
+		// Copy relevant parameters for consistency
+		config.Arrow.M = config.Hybrid.M
+		config.Arrow.Ml = config.Hybrid.Ml
+		config.Arrow.EfSearch = config.Hybrid.EfSearch
+		config.Arrow.Distance = config.Hybrid.Distance
 
-	case hybrid.HNSWIndexType:
-		// If using HNSW with Parquet, create a ParquetGraph
-		if config.Parquet.Directory != "" {
-			pgConfig := parquet.ParquetGraphConfig{
-				M:        config.Hybrid.M,
-				Ml:       config.Hybrid.Ml,
-				EfSearch: config.Hybrid.EfSearch,
-				Distance: config.Hybrid.Distance,
-				Storage:  config.Parquet,
-			}
-			pg, err := parquet.NewParquetGraph[K](pgConfig)
-			if err != nil {
-				return fmt.Errorf("failed to create parquet graph: %w", err)
-			}
-			adapter = NewParquetAdapter(pg)
-		} else {
-			// Otherwise, create a standard HNSW graph
-			graph := hnsw.NewGraph[K]()
-			graph.M = config.Hybrid.M
-			graph.Ml = config.Hybrid.Ml
-			graph.EfSearch = config.Hybrid.EfSearch
-			graph.Distance = config.Hybrid.Distance
-			adapter = NewHNSWAdapter(graph)
+		arrowIndex, err := arrow.NewArrowIndex[K](config.Arrow)
+		if err != nil {
+			return fmt.Errorf("failed to create arrow index: %w", err)
 		}
+		adapter = NewArrowAdapter(arrowIndex)
 
 	default:
-		// Default to hybrid index
-		hybridIndex, err := hybrid.NewHybridIndex[K](config.Hybrid)
-		if err != nil {
-			return fmt.Errorf("failed to create hybrid index: %w", err)
+		// If no explicit index type, use Hybrid.Type to determine
+		switch config.Hybrid.Type {
+		case hybrid.HybridIndexType:
+			// Create a hybrid index
+			hybridIndex, err := hybrid.NewHybridIndex[K](config.Hybrid)
+			if err != nil {
+				return fmt.Errorf("failed to create hybrid index: %w", err)
+			}
+			adapter = NewHybridAdapter(hybridIndex)
+
+		case hybrid.HNSWIndexType:
+			// Check for Parquet storage
+			if config.Parquet.Directory != "" {
+				pgConfig := parquet.ParquetGraphConfig{
+					M:        config.Hybrid.M,
+					Ml:       config.Hybrid.Ml,
+					EfSearch: config.Hybrid.EfSearch,
+					Distance: config.Hybrid.Distance,
+					Storage:  config.Parquet,
+				}
+				pg, err := parquet.NewParquetGraph[K](pgConfig)
+				if err != nil {
+					return fmt.Errorf("failed to create parquet graph: %w", err)
+				}
+				adapter = NewParquetAdapter(pg)
+			} else {
+				// Otherwise, create a standard HNSW graph
+				graph := hnsw.NewGraph[K]()
+				graph.M = config.Hybrid.M
+				graph.Ml = config.Hybrid.Ml
+				graph.EfSearch = config.Hybrid.EfSearch
+				graph.Distance = config.Hybrid.Distance
+				adapter = NewHNSWAdapter(graph)
+			}
+
+		default:
+			// Default to hybrid index
+			hybridIndex, err := hybrid.NewHybridIndex[K](config.Hybrid)
+			if err != nil {
+				return fmt.Errorf("failed to create hybrid index: %w", err)
+			}
+			adapter = NewHybridAdapter(hybridIndex)
 		}
-		adapter = NewHybridAdapter(hybridIndex)
 	}
 
 	// Replace the old index with the new one

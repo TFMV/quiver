@@ -43,7 +43,7 @@ All index types support the full range of Quiver features, including faceted sea
 
 ## What can you do with Quiver?
 
-Quiver makes it easy to form complex queries and any of our three index types.
+Quiver makes it easy to form complex queries for any of our index types.
 
 ```go
 func SearchWithComplexOptions(database *db.VectorDB[uint64]) {
