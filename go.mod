@@ -1,11 +1,12 @@
 module github.com/TFMV/quiver
 
-go 1.24
+go 1.24.0
 
 require (
-	github.com/TFMV/hnsw v0.3.0
+	github.com/TFMV/hnsw v0.4.0
 	github.com/bytedance/sonic v1.13.1
 	github.com/gofiber/fiber/v2 v2.52.6
+	github.com/marcboeker/go-duckdb/v2 v2.0.1
 	github.com/prometheus/client_golang v1.21.1
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.19.0
@@ -25,7 +26,14 @@ require (
 	github.com/chewxy/math32 v1.10.1 // indirect
 	github.com/cloudwego/base64x v0.1.5 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/duckdb/duckdb-go-bindings v0.1.10 // indirect
+	github.com/duckdb/duckdb-go-bindings/darwin-amd64 v0.1.5 // indirect
+	github.com/duckdb/duckdb-go-bindings/darwin-arm64 v0.1.5 // indirect
+	github.com/duckdb/duckdb-go-bindings/linux-amd64 v0.1.5 // indirect
+	github.com/duckdb/duckdb-go-bindings/linux-arm64 v0.1.5 // indirect
+	github.com/duckdb/duckdb-go-bindings/windows-amd64 v0.1.5 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
+	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/flatbuffers v25.1.24+incompatible // indirect
@@ -37,6 +45,8 @@ require (
 	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
+	github.com/marcboeker/go-duckdb/arrowmapping v0.0.3 // indirect
+	github.com/marcboeker/go-duckdb/mapping v0.0.3 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect

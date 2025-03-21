@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/TFMV/hnsw"
+	"github.com/TFMV/hnsw/hnsw-extensions/arrow"
 	"github.com/TFMV/hnsw/hnsw-extensions/hybrid"
 	"github.com/TFMV/hnsw/hnsw-extensions/parquet"
 )
@@ -42,6 +43,14 @@ func NewHybridAdapter[K cmp.Ordered](index *hybrid.HybridIndex[K]) *IndexAdapter
 	}
 }
 
+// NewArrowAdapter creates a new adapter for an Arrow-native HNSW index
+func NewArrowAdapter[K cmp.Ordered](index *arrow.ArrowIndex[K]) *IndexAdapter[K] {
+	return &IndexAdapter[K]{
+		index:     index,
+		indexType: "arrow",
+	}
+}
+
 // Add adds a vector to the index
 func (a *IndexAdapter[K]) Add(key K, vector []float32) error {
 	switch a.indexType {
@@ -55,6 +64,9 @@ func (a *IndexAdapter[K]) Add(key K, vector []float32) error {
 		return graph.Add(node)
 	case "hybrid":
 		index := a.index.(*hybrid.HybridIndex[K])
+		return index.Add(key, vector)
+	case "arrow":
+		index := a.index.(*arrow.ArrowIndex[K])
 		return index.Add(key, vector)
 	default:
 		return fmt.Errorf("unsupported index type: %s", a.indexType)
@@ -134,6 +146,17 @@ func (a *IndexAdapter[K]) BatchAdd(keys []K, vectors [][]float32) error {
 	case "hybrid":
 		index := a.index.(*hybrid.HybridIndex[K])
 		return index.BatchAdd(keys, vectors)
+	case "arrow":
+		index := a.index.(*arrow.ArrowIndex[K])
+		errors := index.BatchAdd(keys, vectors)
+
+		// Check if any errors occurred during batch add
+		for i, err := range errors {
+			if err != nil {
+				return fmt.Errorf("error adding vector %v: %w", keys[i], err)
+			}
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported index type: %s", a.indexType)
 	}
@@ -160,6 +183,21 @@ func (a *IndexAdapter[K]) Search(query []float32, k int) ([]hnsw.Node[K], error)
 		index := a.index.(*hybrid.HybridIndex[K])
 		nodes, err := index.Search(query, k)
 		return nodes, err
+	case "arrow":
+		index := a.index.(*arrow.ArrowIndex[K])
+		results, err := index.Search(query, k)
+		if err != nil {
+			return nil, err
+		}
+
+		// Convert arrow results to HNSW nodes
+		nodes := make([]hnsw.Node[K], len(results))
+		for i, result := range results {
+			nodes[i] = hnsw.MakeNode(result.Key, nil)
+			// Set the distance field if it exists on the Node struct
+			// Note: We're not setting the vector data as it might not be included in search results
+		}
+		return nodes, nil
 	default:
 		return nil, fmt.Errorf("unsupported index type: %s", a.indexType)
 	}
@@ -171,6 +209,29 @@ func (a *IndexAdapter[K]) SearchWithNegative(query []float32, negative []float32
 	case "hnsw":
 		graph := a.index.(*hnsw.Graph[K])
 		return graph.SearchWithNegative(query, negative, k, negWeight)
+	case "arrow":
+		// If the Arrow index supports search with negative examples
+		index := a.index.(*arrow.ArrowIndex[K])
+		if searcher, ok := interface{}(index).(interface {
+			SearchWithNegative(query, negative []float32, k int, negWeight float32) ([]interface{}, error)
+		}); ok {
+			results, err := searcher.SearchWithNegative(query, negative, k, negWeight)
+			if err != nil {
+				return nil, err
+			}
+
+			// Convert arrow results to HNSW nodes
+			nodes := make([]hnsw.Node[K], len(results))
+			for i, res := range results {
+				// We expect each result to be a struct with Key field
+				if result, ok := res.(struct{ Key K }); ok {
+					nodes[i] = hnsw.MakeNode(result.Key, nil)
+				}
+			}
+			return nodes, nil
+		}
+		// Fallback to regular search for Arrow indexes that don't support negative examples
+		return a.Search(query, k)
 	default:
 		// Fallback to regular search for other index types
 		return a.Search(query, k)
@@ -183,6 +244,29 @@ func (a *IndexAdapter[K]) SearchWithNegatives(query []float32, negatives [][]flo
 	case "hnsw":
 		graph := a.index.(*hnsw.Graph[K])
 		return graph.SearchWithNegatives(query, negatives, k, negWeight)
+	case "arrow":
+		// If the Arrow index supports search with negative examples
+		index := a.index.(*arrow.ArrowIndex[K])
+		if searcher, ok := interface{}(index).(interface {
+			SearchWithNegatives(query []float32, negatives [][]float32, k int, negWeight float32) ([]interface{}, error)
+		}); ok {
+			results, err := searcher.SearchWithNegatives(query, negatives, k, negWeight)
+			if err != nil {
+				return nil, err
+			}
+
+			// Convert arrow results to HNSW nodes
+			nodes := make([]hnsw.Node[K], len(results))
+			for i, res := range results {
+				// We expect each result to be a struct with Key field
+				if result, ok := res.(struct{ Key K }); ok {
+					nodes[i] = hnsw.MakeNode(result.Key, nil)
+				}
+			}
+			return nodes, nil
+		}
+		// Fallback to regular search for Arrow indexes that don't support negative examples
+		return a.Search(query, k)
 	default:
 		// Fallback to regular search for other index types
 		return a.Search(query, k)
@@ -201,6 +285,9 @@ func (a *IndexAdapter[K]) Delete(key K) bool {
 	case "hybrid":
 		index := a.index.(*hybrid.HybridIndex[K])
 		return index.Delete(key)
+	case "arrow":
+		index := a.index.(*arrow.ArrowIndex[K])
+		return index.Delete(key)
 	default:
 		return false
 	}
@@ -217,6 +304,9 @@ func (a *IndexAdapter[K]) BatchDelete(keys []K) []bool {
 		return graph.BatchDelete(keys)
 	case "hybrid":
 		index := a.index.(*hybrid.HybridIndex[K])
+		return index.BatchDelete(keys)
+	case "arrow":
+		index := a.index.(*arrow.ArrowIndex[K])
 		return index.BatchDelete(keys)
 	default:
 		results := make([]bool, len(keys))
@@ -236,6 +326,13 @@ func (a *IndexAdapter[K]) Len() int {
 	case "hybrid":
 		index := a.index.(*hybrid.HybridIndex[K])
 		return index.Len()
+	case "arrow":
+		index := a.index.(*arrow.ArrowIndex[K])
+		stats := index.Stats()
+		if numVectors, ok := stats["num_vectors"].(int); ok {
+			return numVectors
+		}
+		return 0
 	default:
 		return 0
 	}
@@ -252,6 +349,9 @@ func (a *IndexAdapter[K]) Close() error {
 		return graph.Close()
 	case "hybrid":
 		index := a.index.(*hybrid.HybridIndex[K])
+		return index.Close()
+	case "arrow":
+		index := a.index.(*arrow.ArrowIndex[K])
 		return index.Close()
 	default:
 		return fmt.Errorf("unsupported index type: %s", a.indexType)
