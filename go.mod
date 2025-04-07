@@ -6,7 +6,7 @@ toolchain go1.24.1
 
 require (
 	github.com/TFMV/hnsw v0.4.0
-	github.com/bytedance/sonic v1.13.1
+	github.com/bytedance/sonic v1.13.2
 	github.com/gofiber/fiber/v2 v2.52.6
 	github.com/marcboeker/go-duckdb/v2 v2.1.0
 	github.com/prometheus/client_golang v1.21.1
