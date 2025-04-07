@@ -11,7 +11,7 @@ require (
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.19.0
 	github.com/stretchr/testify v1.10.0
-	github.com/valyala/fasthttp v1.59.0
+	github.com/valyala/fasthttp v1.60.0
 	go.uber.org/zap v1.27.0
 )
 
@@ -42,7 +42,7 @@ require (
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/asmfmt v1.3.2 // indirect
-	github.com/klauspost/compress v1.17.11 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/marcboeker/go-duckdb/arrowmapping v0.0.3 // indirect
@@ -78,10 +78,10 @@ require (
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/exp v0.0.0-20250128182459-e0ece0dbea4c // indirect
 	golang.org/x/mod v0.23.0 // indirect
-	golang.org/x/net v0.35.0 // indirect
-	golang.org/x/sync v0.11.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
-	golang.org/x/text v0.22.0 // indirect
+	golang.org/x/net v0.38.0 // indirect
+	golang.org/x/sync v0.12.0 // indirect
+	golang.org/x/sys v0.31.0 // indirect
+	golang.org/x/text v0.23.0 // indirect
 	golang.org/x/tools v0.30.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250219182151-9fdb1cabc7b2 // indirect
