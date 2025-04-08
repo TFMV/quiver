@@ -1,10 +1,15 @@
 # 🏹 Quiver
 
-> **Note:** Quiver is an experimental vector database. While it's packed with cool features, it's still finding its feet in the world. Feel free to play with it, but maybe don't bet your production system on it just yet!
-
 ## What is Quiver?
 
 Quiver is a Go-based vector database that combines the best of HNSW (Hierarchical Navigable Small World) graphs with other cool search techniques. It provides efficient similarity search capabilities while maintaining a clean, easy-to-use API.
+
+🙋 Why I Built Quiver
+I didn’t create Quiver for production use. It’s a learning project—my way of exploring the internals of vector databases and sharing what I’ve learned. It’s also a toy.
+
+If you’re curious about how vector search works under the hood, or if you want a foundation to build your own system, feel free to fork or clone it. I’ve kept it small and modular to make that easier.
+
+Accompanying write-ups are available on Medium.
 
 ## Supported Index Types
 
@@ -19,6 +24,8 @@ Both index types can be backed by **Parquet Storage**, which efficiently persist
 All index types support metadata filtering and negative examples. Choose the right index type for your needs and let APT optimize your parameters automatically!
 
 ## Why Choose Quiver?
+
+I didn't create Quiver for it to be used in real-world projects. Instead, its primary purpose is to share what I've learned about vector databases, primarily through code and documentation, supplemented by Medium articles. I've tried to keep it small and modular so that you can fork/clone it and make it your own.
 
 - **🚀 Performance**: Quiver is built for speed without sacrificing accuracy
 - **🔍 Smart Search Strategy**: Quiver doesn't just use one search method - it combines HNSW with exact search to find the best results
