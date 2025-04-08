@@ -1,0 +1,20 @@
+# Quiver configuration file
+# This is a sample configuration - save as .quiver.yaml in your home directory
+
+# Database settings
+data_dir: "./data" # Directory for vector storage
+log_level: "info" # Log level: debug, info, warn, error
+
+# Server settings
+host: "localhost" # Server host address
+port: 8080 # Server port
+
+# Security settings
+auth: false # Enable JWT authentication
+jwt_secret: "" # JWT secret (required if auth is enabled)
+cors: true # Enable CORS for API access
+
+# Advanced settings
+flush_interval: 60 # Interval in seconds to flush data to disk
+backup_dir: "./backups" # Directory for automatic backups (if enabled)
+auto_backup: false # Enable automatic backups
