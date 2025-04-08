@@ -5,20 +5,34 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: quiver
+    container_name: quiver-db
     ports:
       - "8080:8080"
     volumes:
-      - quiver_data:/app/data
+      - quiver-data:/app/data
     environment:
+      # Server configuration
       - QUIVER_SERVER_PORT=8080
       - QUIVER_SERVER_HOST=0.0.0.0
+      - QUIVER_LOG_LEVEL=info
+
+      # Storage configuration
       - QUIVER_SERVER_STORAGE=/app/data
-      - QUIVER_INDEX_DIMENSION=128
-      - QUIVER_INDEX_MAX_ELEMENTS=1000000
+      - QUIVER_ENABLE_PERSISTENCE=true
+      - QUIVER_PERSISTENCE_FORMAT=parquet
+      - QUIVER_FLUSH_INTERVAL=300
+
+      # Index configuration
+      - QUIVER_INDEX_DIMENSION=768
       - QUIVER_INDEX_DISTANCE=cosine
-      - QUIVER_INDEX_HNSW_M=16
-      - QUIVER_INDEX_HNSW_EF_SEARCH=100
+      - QUIVER_ENABLE_HYBRID=true
+      - QUIVER_MAX_CONNECTIONS=16
+      - QUIVER_EF_CONSTRUCTION=200
+      - QUIVER_EF_SEARCH=100
+
+      # Performance configuration
+      - QUIVER_ENABLE_METRICS=true
+      - QUIVER_BATCH_SIZE=100
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
@@ -28,5 +42,5 @@ services:
       start_period: 5s
 
 volumes:
-  quiver_data:
+  quiver-data:
     driver: local
