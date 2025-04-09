@@ -238,7 +238,7 @@ func TestGetVectors(t *testing.T) {
 
 		if v.metadata == nil {
 			// If original metadata was nil, expect empty map or nil
-			if record.Metadata != nil && len(record.Metadata) > 0 {
+			if len(record.Metadata) > 0 {
 				t.Errorf("Expected empty metadata for %s, got %v", v.id, record.Metadata)
 			}
 		} else {

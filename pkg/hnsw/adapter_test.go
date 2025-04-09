@@ -2,11 +2,8 @@ package hnsw
 
 import (
 	"fmt"
-	"reflect"
 	"testing"
 	"time"
-
-	"github.com/TFMV/quiver/pkg/types"
 )
 
 func TestNewAdapter(t *testing.T) {
@@ -509,7 +506,9 @@ func TestHNSWAdapter_GetDetailedMetrics(t *testing.T) {
 	}
 }
 
-// Helper function for comparing search results
+// Helper function for comparing search results - not currently used but kept for future tests
+// compareResults is used in future tests and should be retained
+/*
 func compareResults(t *testing.T, got, want []types.BasicSearchResult) {
 	t.Helper()
 
@@ -517,3 +516,4 @@ func compareResults(t *testing.T, got, want []types.BasicSearchResult) {
 		t.Errorf("Results don't match.\nGot: %+v\nWant: %+v", got, want)
 	}
 }
+*/

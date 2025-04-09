@@ -301,40 +301,44 @@ func TestHNSW_ConcurrentOperations(t *testing.T) {
 	const numGoroutines = 10
 	const opsPerGoroutine = 10
 
-	// Random seed based on time
-	rand.Seed(time.Now().UnixNano())
-
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(routineID int) {
 			defer wg.Done()
 
+			// Each goroutine needs its own random source to avoid contention
+			localRng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(routineID)))
+
 			for j := 0; j < opsPerGoroutine; j++ {
-				op := rand.Intn(3) // 0: insert, 1: delete, 2: search
+				op := localRng.Intn(3) // 0: insert, 1: delete, 2: search
 
 				switch op {
 				case 0: // insert
 					id := fmt.Sprintf("r%d_op%d", routineID, j)
-					vector := []float32{float32(rand.Intn(100)), float32(rand.Intn(100)), float32(rand.Intn(100))}
-					hnsw.Insert(id, vector) // ignore errors (could be duplicate)
+					vector := []float32{float32(localRng.Intn(100)), float32(localRng.Intn(100)), float32(localRng.Intn(100))}
+					// Ignore errors (could be duplicate)
+					_ = hnsw.Insert(id, vector)
 
 				case 1: // delete
-					if rand.Intn(2) == 0 {
+					if localRng.Intn(2) == 0 {
 						// Try to delete an initial vector
-						id := fmt.Sprintf("init_%d", rand.Intn(10))
-						hnsw.Delete(id) // ignore errors (might be deleted already)
+						id := fmt.Sprintf("init_%d", localRng.Intn(10))
+						// Ignore errors (might be deleted already)
+						_ = hnsw.Delete(id)
 					} else {
 						// Try to delete a vector added by another routine
-						otherRoutine := rand.Intn(numGoroutines)
-						otherOp := rand.Intn(opsPerGoroutine)
+						otherRoutine := localRng.Intn(numGoroutines)
+						otherOp := localRng.Intn(opsPerGoroutine)
 						id := fmt.Sprintf("r%d_op%d", otherRoutine, otherOp)
-						hnsw.Delete(id) // ignore errors (might not exist)
+						// Ignore errors (might not exist)
+						_ = hnsw.Delete(id)
 					}
 
 				case 2: // search
-					query := []float32{float32(rand.Intn(100)), float32(rand.Intn(100)), float32(rand.Intn(100))}
-					k := rand.Intn(5) + 1 // search for 1-5 nearest neighbors
-					hnsw.Search(query, k) // ignore errors and results
+					query := []float32{float32(localRng.Intn(100)), float32(localRng.Intn(100)), float32(localRng.Intn(100))}
+					k := localRng.Intn(5) + 1 // search for 1-5 nearest neighbors
+					// Ignore errors and results
+					_, _ = hnsw.Search(query, k)
 				}
 			}
 		}(i)
@@ -481,23 +485,29 @@ func BenchmarkHNSW_Search(b *testing.B) {
 }
 
 func BenchmarkHNSW_Delete(b *testing.B) {
-	// Limit benchmark size to avoid running out of vectors to delete
-	if b.N > 10000 {
-		b.N = 10000
-	}
+	// Create a fixed number of vectors to insert/delete
+	const numVectors = 10000
 
 	// Setup: Insert vectors
 	hnsw := NewHNSW(Config{
 		DistanceFunc: EuclideanDistanceFunc,
 	})
-	for i := 0; i < b.N; i++ {
+
+	// Only insert as many vectors as we'll test
+	vectorCount := b.N
+	if vectorCount > numVectors {
+		vectorCount = numVectors
+	}
+
+	for i := 0; i < vectorCount; i++ {
 		id := fmt.Sprintf("bench_%d", i)
 		vector := []float32{float32(i % 100), float32((i + 1) % 100), float32((i + 2) % 100)}
 		_ = hnsw.Insert(id, vector)
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	// Only run the benchmark for as many vectors as we've inserted
+	for i := 0; i < vectorCount; i++ {
 		id := fmt.Sprintf("bench_%d", i)
 		_ = hnsw.Delete(id)
 	}

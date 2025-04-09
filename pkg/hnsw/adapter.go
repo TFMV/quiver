@@ -281,7 +281,13 @@ func (a *HNSWAdapter) InsertBatch(vectors map[string][]float32) error {
 		}
 
 		// Connect the node to the graph (without locking, as we have the global lock)
-		a.hnsw.connectNode(nodeID, vector, level)
+		if err := a.hnsw.connectNode(nodeID, vector, level); err != nil {
+			// If connection fails, clean up
+			a.hnsw.Nodes[nodeID] = nil
+			delete(a.hnsw.NodesByID, id)
+			delete(a.idToIndex, id)
+			return err
+		}
 
 		// Increment size
 		atomic.AddUint32(&a.hnsw.size, 1)

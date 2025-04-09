@@ -84,8 +84,8 @@ func (idx *HNSWAdapter) GetStats() interface{} {
 }
 
 // SetSearchEf adjusts the EfSearch parameter which controls search accuracy
-func (idx *HNSWAdapter) SetSearchEf(efSearch int) {
-	idx.adapter.SetOptimizationParameters(map[string]float64{
+func (idx *HNSWAdapter) SetSearchEf(efSearch int) error {
+	return idx.adapter.SetOptimizationParameters(map[string]float64{
 		"EfSearch": float64(efSearch),
 	})
 }

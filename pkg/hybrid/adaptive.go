@@ -167,12 +167,16 @@ func (a *AdaptiveStrategySelector) adaptThresholds() {
 	if smallDatasetHNSWCount > 0 {
 		smallDatasetHNSWAvg /= time.Duration(smallDatasetHNSWCount)
 	}
-	if largeDatasetExactCount > 0 {
-		largeDatasetExactAvg /= time.Duration(largeDatasetExactCount)
-	}
-	if largeDatasetHNSWCount > 0 {
-		largeDatasetHNSWAvg /= time.Duration(largeDatasetHNSWCount)
-	}
+	// Only calculate these if they will be used later
+	// For now these are calculated but not used, so we'll comment them out
+	/*
+		if largeDatasetExactCount > 0 {
+			largeDatasetExactAvg /= time.Duration(largeDatasetExactCount)
+		}
+		if largeDatasetHNSWCount > 0 {
+			largeDatasetHNSWAvg /= time.Duration(largeDatasetHNSWCount)
+		}
+	*/
 
 	// Adapt exact threshold based on performance for small vs large datasets
 	if smallDatasetExactCount > 5 && smallDatasetHNSWCount > 5 {
