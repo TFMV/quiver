@@ -211,7 +211,9 @@ func TestHNSWAdapter_SetSearchEf(t *testing.T) {
 
 	// Set a new EfSearch value
 	newEfSearch := 200
-	adapter.SetSearchEf(newEfSearch)
+	if err := adapter.SetSearchEf(newEfSearch); err != nil {
+		t.Fatalf("SetSearchEf failed: %v", err)
+	}
 
 	// While we can't directly verify the internal change since the field is within
 	// the wrapped adapter, we can check that the method runs without error

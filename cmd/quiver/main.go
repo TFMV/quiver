@@ -288,9 +288,19 @@ func init() {
 	serveCmd.Flags().Bool("cors", true, "enable CORS")
 
 	// Bind flags to viper
-	viper.BindPFlag("host", serveCmd.Flags().Lookup("host"))
-	viper.BindPFlag("port", serveCmd.Flags().Lookup("port"))
-	viper.BindPFlag("auth", serveCmd.Flags().Lookup("auth"))
-	viper.BindPFlag("jwt_secret", serveCmd.Flags().Lookup("jwt-secret"))
-	viper.BindPFlag("cors", serveCmd.Flags().Lookup("cors"))
+	if err := viper.BindPFlag("host", serveCmd.Flags().Lookup("host")); err != nil {
+		fmt.Printf("Error binding host flag: %v\n", err)
+	}
+	if err := viper.BindPFlag("port", serveCmd.Flags().Lookup("port")); err != nil {
+		fmt.Printf("Error binding port flag: %v\n", err)
+	}
+	if err := viper.BindPFlag("auth", serveCmd.Flags().Lookup("auth")); err != nil {
+		fmt.Printf("Error binding auth flag: %v\n", err)
+	}
+	if err := viper.BindPFlag("jwt_secret", serveCmd.Flags().Lookup("jwt-secret")); err != nil {
+		fmt.Printf("Error binding jwt_secret flag: %v\n", err)
+	}
+	if err := viper.BindPFlag("cors", serveCmd.Flags().Lookup("cors")); err != nil {
+		fmt.Printf("Error binding cors flag: %v\n", err)
+	}
 }

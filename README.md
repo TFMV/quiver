@@ -26,8 +26,6 @@ All index types support metadata filtering and negative examples. Choose the rig
 
 ## Why Choose Quiver?
 
-I didn't create Quiver for it to be used in real-world projects. Instead, its primary purpose is to share what I've learned about vector databases, primarily through code and documentation, supplemented by Medium articles. I've tried to keep it small and modular so that you can fork/clone it and make it your own.
-
 - **🚀 Performance**: Quiver is built for speed without sacrificing accuracy
 - **🔍 Smart Search Strategy**: Quiver doesn't just use one search method - it combines HNSW with exact search to find the best results
 - **😌 Easy to Use**: Our fluent API just makes sense

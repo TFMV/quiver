@@ -116,7 +116,10 @@ func (idx *HybridIndex) Insert(id string, vector vectortypes.F32) error {
 
 	if err := idx.hnswIndex.Insert(id, vectorCopy); err != nil {
 		// If HNSW insertion fails, remove from exact index to maintain consistency
-		idx.exactIndex.Delete(id)
+		if deleteErr := idx.exactIndex.Delete(id); deleteErr != nil {
+			// Log that rollback failed but return the original error
+			return fmt.Errorf("insert failed (%w) and rollback also failed: %v", err, deleteErr)
+		}
 		return err
 	}
 
@@ -151,11 +154,17 @@ func (idx *HybridIndex) InsertBatch(vectors map[string]vectortypes.F32) error {
 	for id, vector := range vectorsCopy {
 		if err := idx.exactIndex.Insert(id, vector); err != nil {
 			// Rollback any insertions made so far
+			rollbackErrs := []string{}
 			for rollbackID := range vectorsCopy {
 				if rollbackID == id {
 					break // Stop at the failed ID
 				}
-				idx.exactIndex.Delete(rollbackID)
+				if deleteErr := idx.exactIndex.Delete(rollbackID); deleteErr != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Sprintf("failed to rollback %s: %v", rollbackID, deleteErr))
+				}
+			}
+			if len(rollbackErrs) > 0 {
+				return fmt.Errorf("batch insert failed at ID %s: %w (rollback errors: %v)", id, err, rollbackErrs)
 			}
 			return fmt.Errorf("batch insert failed at ID %s: %w", id, err)
 		}
@@ -165,13 +174,21 @@ func (idx *HybridIndex) InsertBatch(vectors map[string]vectortypes.F32) error {
 	for id, vector := range vectorsCopy {
 		if err := idx.hnswIndex.Insert(id, vector); err != nil {
 			// Rollback all insertions
+			rollbackErrs := []string{}
 			for rollbackID := range vectorsCopy {
-				idx.exactIndex.Delete(rollbackID)
+				if deleteErr := idx.exactIndex.Delete(rollbackID); deleteErr != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Sprintf("failed to rollback exact %s: %v", rollbackID, deleteErr))
+				}
 				// Only try to delete from HNSW if we've already inserted it
 				if rollbackID == id {
 					break
 				}
-				idx.hnswIndex.Delete(rollbackID)
+				if deleteErr := idx.hnswIndex.Delete(rollbackID); deleteErr != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Sprintf("failed to rollback hnsw %s: %v", rollbackID, deleteErr))
+				}
+			}
+			if len(rollbackErrs) > 0 {
+				return fmt.Errorf("batch insert failed at ID %s: %w (rollback errors: %v)", id, err, rollbackErrs)
 			}
 			return fmt.Errorf("batch insert failed at ID %s: %w", id, err)
 		}
@@ -469,12 +486,11 @@ func (idx *HybridIndex) searchWithStrategy(query vectortypes.F32, k int, strateg
 				// - Keep the original distance as the main part
 				// - Subtract a factor for the negative example (inverted, since higher values are better)
 
-				// Normalize negative distance based on distance function
-				// Assuming cosine or euclidean
-				normNegDist := negDist
-
 				// Get distance function signature
 				distFuncName := getFunctionName(idx.distFunc)
+
+				// Normalize negative distance based on distance function
+				var normNegDist float32
 				if strings.Contains(distFuncName, "Cosine") {
 					// For cosine, range is 0-2, where 0 is identical, 2 is opposite
 					// Normalize to [0,1] and invert
