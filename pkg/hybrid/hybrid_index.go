@@ -36,6 +36,9 @@ type HybridIndex struct {
 	// Stats tracking
 	stats HybridStats
 
+	// Dimension of vectors stored in the index
+	vectorDim int
+
 	// Mutex for thread safety
 	mu sync.RWMutex
 }
@@ -75,11 +78,7 @@ func NewHybridIndex(config IndexConfig) *HybridIndex {
 	index.stats.StrategyStats[HNSWIndexType] = &StrategyStats{}
 	index.stats.StrategyStats[HybridIndexType] = &StrategyStats{}
 
-	// Update the index selector with current statistics
-	index.selector = NewAdaptiveStrategySelector(DefaultAdaptiveConfig())
-	// Set the initial thresholds based on the current state
-	index.selector.exactThreshold = index.stats.VectorCount
-	index.selector.dimThreshold = index.stats.AvgDimension
+	index.vectorDim = 0
 
 	return index
 }
@@ -88,6 +87,12 @@ func NewHybridIndex(config IndexConfig) *HybridIndex {
 func (idx *HybridIndex) Insert(id string, vector vectortypes.F32) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+
+	if idx.vectorDim == 0 {
+		idx.vectorDim = len(vector)
+	} else if len(vector) != idx.vectorDim {
+		return fmt.Errorf("vector dimension mismatch: expected %d, got %d", idx.vectorDim, len(vector))
+	}
 
 	// Make a copy of the vector to prevent external modification
 	vectorCopy := make(vectortypes.F32, len(vector))
@@ -103,11 +108,8 @@ func (idx *HybridIndex) Insert(id string, vector vectortypes.F32) error {
 	idx.stats.VectorCount++
 	idx.stats.AvgDimension = calculateAvgDimension(idx.dimensions)
 
-	// Update adaptive selector with current statistics
-	idx.selector = NewAdaptiveStrategySelector(DefaultAdaptiveConfig())
-	// Set the initial thresholds based on the current state
-	idx.selector.exactThreshold = idx.stats.VectorCount
-	idx.selector.dimThreshold = idx.stats.AvgDimension
+	// Update adaptive selector thresholds
+	idx.selector.UpdateThresholds(idx.stats.VectorCount, idx.stats.AvgDimension)
 
 	// Add to all component indexes
 	if err := idx.exactIndex.Insert(id, vectorCopy); err != nil {
@@ -133,6 +135,18 @@ func (idx *HybridIndex) InsertBatch(vectors map[string]vectortypes.F32) error {
 
 	if len(vectors) == 0 {
 		return nil
+	}
+
+	if idx.vectorDim == 0 {
+		for _, v := range vectors {
+			idx.vectorDim = len(v)
+			break
+		}
+	}
+	for _, v := range vectors {
+		if len(v) != idx.vectorDim {
+			return fmt.Errorf("vector dimension mismatch: expected %d, got %d", idx.vectorDim, len(v))
+		}
 	}
 
 	// Make copies and collect dimensions
@@ -206,10 +220,8 @@ func (idx *HybridIndex) InsertBatch(vectors map[string]vectortypes.F32) error {
 	idx.stats.VectorCount += len(vectors)
 	idx.stats.AvgDimension = calculateAvgDimension(idx.dimensions)
 
-	// Update adaptive selector
-	idx.selector = NewAdaptiveStrategySelector(DefaultAdaptiveConfig())
-	idx.selector.exactThreshold = idx.stats.VectorCount
-	idx.selector.dimThreshold = idx.stats.AvgDimension
+	// Update adaptive selector thresholds
+	idx.selector.UpdateThresholds(idx.stats.VectorCount, idx.stats.AvgDimension)
 
 	return nil
 }
@@ -251,6 +263,12 @@ func (idx *HybridIndex) Delete(id string) error {
 			idx.stats.AvgDimension = 0
 		}
 	}
+
+	if len(idx.vectors) == 0 {
+		idx.vectorDim = 0
+	}
+
+	idx.selector.UpdateThresholds(idx.stats.VectorCount, idx.stats.AvgDimension)
 
 	return nil
 }
@@ -329,6 +347,12 @@ func (idx *HybridIndex) DeleteBatch(ids []string) error {
 		return fmt.Errorf("errors during batch delete: %v", errorMsgs)
 	}
 
+	if len(idx.vectors) == 0 {
+		idx.vectorDim = 0
+	}
+
+	idx.selector.UpdateThresholds(idx.stats.VectorCount, idx.stats.AvgDimension)
+
 	return nil
 }
 
@@ -343,6 +367,13 @@ func (idx *HybridIndex) SearchWithRequest(req HybridSearchRequest) (HybridSearch
 	defer idx.mu.RUnlock()
 
 	startTime := time.Now()
+
+	if idx.vectorDim > 0 && len(req.Query) != idx.vectorDim {
+		return HybridSearchResponse{}, fmt.Errorf("query dimension mismatch: expected %d, got %d", idx.vectorDim, len(req.Query))
+	}
+	if len(req.NegativeExample) > 0 && idx.vectorDim > 0 && len(req.NegativeExample) != idx.vectorDim {
+		return HybridSearchResponse{}, fmt.Errorf("negative example dimension mismatch: expected %d, got %d", idx.vectorDim, len(req.NegativeExample))
+	}
 
 	// Ensure valid K
 	if req.K <= 0 {
@@ -433,6 +464,10 @@ func (idx *HybridIndex) searchWithStrategy(query vectortypes.F32, k int, strateg
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
+	if idx.vectorDim > 0 && len(query) != idx.vectorDim {
+		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", idx.vectorDim, len(query))
+	}
+
 	// If no specific strategy is provided, select one
 	if strategy == "" {
 		// Pass proper parameters to SelectStrategy: vectorCount, dimension, k
@@ -451,6 +486,9 @@ func (idx *HybridIndex) searchWithStrategy(query vectortypes.F32, k int, strateg
 		// If we have more than one parameter, the second one is the negative weight
 		if len(negativeExample) > 1 && len(negativeExample[1]) == 1 {
 			negWeight = negativeExample[1][0]
+		}
+		if hasNegative && idx.vectorDim > 0 && len(negExample) != idx.vectorDim {
+			return nil, fmt.Errorf("negative example dimension mismatch: expected %d, got %d", idx.vectorDim, len(negExample))
 		}
 	}
 
@@ -636,6 +674,23 @@ func (idx *HybridIndex) BatchSearch(request BatchSearchRequest) (BatchSearchResp
 		wg.Add(1)
 		go func(index int, queryVector vectortypes.F32) {
 			defer wg.Done()
+
+			if idx.vectorDim > 0 && len(queryVector) != idx.vectorDim {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("query %d dimension mismatch: expected %d, got %d", index, idx.vectorDim, len(queryVector))
+				}
+				errMu.Unlock()
+				return
+			}
+			if hasNegativeExamples && len(request.NegativeExamples[index]) != idx.vectorDim {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("negative example %d dimension mismatch: expected %d, got %d", index, idx.vectorDim, len(request.NegativeExamples[index]))
+				}
+				errMu.Unlock()
+				return
+			}
 
 			// Time this search
 			startTime := time.Now()

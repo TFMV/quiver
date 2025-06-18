@@ -2,6 +2,7 @@ package hybrid
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 
@@ -17,6 +18,9 @@ type ExactIndex struct {
 	// Distance function to use
 	distFunc vectortypes.DistanceFunc
 
+	// dimension of stored vectors
+	vectorDim int
+
 	// Mutex for thread safety
 	mu sync.RWMutex
 }
@@ -24,8 +28,9 @@ type ExactIndex struct {
 // NewExactIndex creates a new exact search index
 func NewExactIndex(distFunc vectortypes.DistanceFunc) *ExactIndex {
 	return &ExactIndex{
-		vectors:  make(map[string]vectortypes.F32),
-		distFunc: distFunc,
+		vectors:   make(map[string]vectortypes.F32),
+		distFunc:  distFunc,
+		vectorDim: 0,
 	}
 }
 
@@ -33,6 +38,13 @@ func NewExactIndex(distFunc vectortypes.DistanceFunc) *ExactIndex {
 func (idx *ExactIndex) Insert(id string, vector vectortypes.F32) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+
+	// Validate dimension consistency
+	if idx.vectorDim == 0 {
+		idx.vectorDim = len(vector)
+	} else if len(vector) != idx.vectorDim {
+		return fmt.Errorf("vector dimension mismatch: expected %d, got %d", idx.vectorDim, len(vector))
+	}
 
 	// Make a copy of the vector to prevent external modification
 	vectorCopy := make(vectortypes.F32, len(vector))
@@ -48,6 +60,9 @@ func (idx *ExactIndex) Delete(id string) error {
 	defer idx.mu.Unlock()
 
 	delete(idx.vectors, id)
+	if len(idx.vectors) == 0 {
+		idx.vectorDim = 0
+	}
 	return nil
 }
 
@@ -79,6 +94,10 @@ func (idx *ExactIndex) Search(query vectortypes.F32, k int) ([]types.BasicSearch
 		return []types.BasicSearchResult{}, nil
 	}
 
+	if idx.vectorDim > 0 && len(query) != idx.vectorDim {
+		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", idx.vectorDim, len(query))
+	}
+
 	if k <= 0 {
 		return nil, errors.New("k must be positive")
 	}
@@ -89,7 +108,7 @@ func (idx *ExactIndex) Search(query vectortypes.F32, k int) ([]types.BasicSearch
 	}
 
 	// Calculate distances for all vectors
-	var results resultHeap
+	results := make(resultHeap, 0, len(idx.vectors))
 	for id, vec := range idx.vectors {
 		distance := idx.distFunc(query, vec)
 		results = append(results, types.BasicSearchResult{

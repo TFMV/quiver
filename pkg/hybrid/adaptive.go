@@ -255,3 +255,11 @@ func (a *AdaptiveStrategySelector) String() string {
 		hnswAvg,
 	)
 }
+
+// UpdateThresholds updates the internal thresholds based on index statistics.
+func (a *AdaptiveStrategySelector) UpdateThresholds(exact, dim int) {
+	a.mu.Lock()
+	a.exactThreshold = exact
+	a.dimThreshold = dim
+	a.mu.Unlock()
+}

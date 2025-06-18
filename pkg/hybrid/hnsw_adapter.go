@@ -1,6 +1,7 @@
 package hybrid
 
 import (
+	"fmt"
 	"github.com/TFMV/quiver/pkg/hnsw"
 	"github.com/TFMV/quiver/pkg/types"
 	"github.com/TFMV/quiver/pkg/vectortypes"
@@ -13,6 +14,9 @@ type HNSWAdapter struct {
 
 	// Configuration for optimization
 	config HNSWConfig
+
+	// dimension of stored vectors
+	dim int
 }
 
 // NewHNSWAdapter creates a new HNSW adapter for the hybrid index
@@ -35,28 +39,48 @@ func NewHNSWAdapter(distFunc vectortypes.DistanceFunc, config HNSWConfig) *HNSWA
 	return &HNSWAdapter{
 		adapter: hnsw.NewAdapter(hnswConfig),
 		config:  config,
+		dim:     0,
 	}
 }
 
 // Insert adds a vector to the index
 func (idx *HNSWAdapter) Insert(id string, vector vectortypes.F32) error {
+	if idx.dim == 0 {
+		idx.dim = len(vector)
+	} else if len(vector) != idx.dim {
+		return fmt.Errorf("vector dimension mismatch: expected %d, got %d", idx.dim, len(vector))
+	}
 	return idx.adapter.Insert(id, vector)
 }
 
 // Delete removes a vector from the index
 func (idx *HNSWAdapter) Delete(id string) error {
-	return idx.adapter.Delete(id)
+	err := idx.adapter.Delete(id)
+	if err == nil && idx.Size() == 0 {
+		idx.dim = 0
+	}
+	return err
 }
 
 // Search finds the k nearest vectors to the query vector
 func (idx *HNSWAdapter) Search(query vectortypes.F32, k int) ([]types.BasicSearchResult, error) {
+	if idx.dim > 0 && len(query) != idx.dim {
+		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", idx.dim, len(query))
+	}
 	return idx.adapter.Search(query, k)
 }
 
 // SearchWithNegative finds the k nearest vectors to the query vector,
 // taking into account a negative example vector
 func (idx *HNSWAdapter) SearchWithNegative(query vectortypes.F32, negativeExample vectortypes.F32, negativeWeight float32, k int) ([]types.BasicSearchResult, error) {
-	// Delegate to the underlying HNSW adapter
+	if idx.dim > 0 {
+		if len(query) != idx.dim {
+			return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", idx.dim, len(query))
+		}
+		if len(negativeExample) != idx.dim {
+			return nil, fmt.Errorf("negative example dimension mismatch: expected %d, got %d", idx.dim, len(negativeExample))
+		}
+	}
 	return idx.adapter.SearchWithNegativeExample(query, negativeExample, negativeWeight, k)
 }
 
