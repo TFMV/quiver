@@ -112,6 +112,26 @@ func (rs *ResultSet) Pop() interface{} {
 	return item
 }
 
+// maxResultSet is a max-heap used to keep track of the top results by distance
+// where the element with the largest distance is at the root.
+type maxResultSet []Result
+
+func (rs maxResultSet) Len() int           { return len(rs) }
+func (rs maxResultSet) Less(i, j int) bool { return rs[i].Distance > rs[j].Distance }
+func (rs maxResultSet) Swap(i, j int)      { rs[i], rs[j] = rs[j], rs[i] }
+
+func (rs *maxResultSet) Push(x interface{}) {
+	*rs = append(*rs, x.(Result))
+}
+
+func (rs *maxResultSet) Pop() interface{} {
+	old := *rs
+	n := len(old)
+	item := old[n-1]
+	*rs = old[:n-1]
+	return item
+}
+
 // NewHNSW creates a new HNSW index with the given config
 func NewHNSW(config Config) *HNSW {
 	if config.M <= 0 {
@@ -383,7 +403,7 @@ func (h *HNSW) searchLayer(queryVector, entryVector []float32, entryPointID uint
 	candidates := &ResultSet{Result{VectorIndex: entryPointID, Distance: distance}}
 	heap.Init(candidates)
 
-	results := &ResultSet{Result{VectorIndex: entryPointID, Distance: distance}}
+	results := &maxResultSet{Result{VectorIndex: entryPointID, Distance: distance}}
 	heap.Init(results)
 
 	// Continue search while candidates exist
@@ -392,7 +412,7 @@ func (h *HNSW) searchLayer(queryVector, entryVector []float32, entryPointID uint
 		current := heap.Pop(candidates).(Result)
 
 		// If the candidate is farther than the farthest in results, we can stop
-		if results.Len() >= ef && current.Distance > (*results)[results.Len()-1].Distance {
+		if results.Len() >= ef && current.Distance > (*results)[0].Distance {
 			break
 		}
 
@@ -432,7 +452,7 @@ func (h *HNSW) searchLayer(queryVector, entryVector []float32, entryPointID uint
 				}
 
 				// If results not full or connection closer than furthest in results
-				if results.Len() < ef || connDist < (*results)[results.Len()-1].Distance {
+				if results.Len() < ef || connDist < (*results)[0].Distance {
 					heap.Push(candidates, Result{VectorIndex: connID, Distance: connDist})
 					heap.Push(results, Result{VectorIndex: connID, Distance: connDist})
 
