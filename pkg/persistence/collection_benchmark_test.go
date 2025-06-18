@@ -50,3 +50,19 @@ func BenchmarkSortSearchResults(b *testing.B) {
 		SortSearchResults(results)
 	}
 }
+
+func BenchmarkCollectionAddVector(b *testing.B) {
+	const dim = 32
+	c := NewCollection("bench_add", dim, vectortypes.EuclideanDistance)
+	vec := make([]float32, dim)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		id := fmt.Sprintf("v%d", i)
+		for j := range vec {
+			vec[j] = float32((i+j)%dim) / 100.0
+		}
+		if err := c.AddVector(id, vec, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
