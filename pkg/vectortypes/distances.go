@@ -54,6 +54,23 @@ func EuclideanDistance(a, b F32) float32 {
 	return float32(math.Sqrt(sum))
 }
 
+// SquaredEuclideanDistance calculates the squared Euclidean distance between vectors
+// This avoids the final square root which can be useful in comparisons where only
+// relative ordering matters.
+func SquaredEuclideanDistance(a, b F32) float32 {
+	if len(a) != len(b) {
+		panic("vectors must have the same length")
+	}
+
+	var sum float32
+	for i := 0; i < len(a); i++ {
+		diff := a[i] - b[i]
+		sum += diff * diff
+	}
+
+	return sum
+}
+
 // DotProductDistance calculates negative dot product as a distance
 // For normalized vectors, higher dot product indicates higher similarity
 // We negate this to make it a distance (where lower values = more similar)
@@ -88,10 +105,11 @@ func ManhattanDistance(a, b F32) float32 {
 
 // Create surfaces for the standard distance functions
 var (
-	CosineSurface     = CreateSurface(CosineDistance)
-	EuclideanSurface  = CreateSurface(EuclideanDistance)
-	DotProductSurface = CreateSurface(DotProductDistance)
-	ManhattanSurface  = CreateSurface(ManhattanDistance)
+	CosineSurface           = CreateSurface(CosineDistance)
+	EuclideanSurface        = CreateSurface(EuclideanDistance)
+	SquaredEuclideanSurface = CreateSurface(SquaredEuclideanDistance)
+	DotProductSurface       = CreateSurface(DotProductDistance)
+	ManhattanSurface        = CreateSurface(ManhattanDistance)
 )
 
 // NormalizeVector normalizes a vector to unit length

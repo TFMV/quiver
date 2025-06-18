@@ -86,6 +86,43 @@ func TestEuclideanDistance(t *testing.T) {
 	}
 }
 
+func TestSquaredEuclideanDistance(t *testing.T) {
+	tests := []struct {
+		name     string
+		vecA     F32
+		vecB     F32
+		expected float32
+	}{
+		{
+			name:     "Identical Vectors",
+			vecA:     F32{1, 0, 0},
+			vecB:     F32{1, 0, 0},
+			expected: 0,
+		},
+		{
+			name:     "Unit Vectors",
+			vecA:     F32{1, 0, 0},
+			vecB:     F32{0, 1, 0},
+			expected: 2,
+		},
+		{
+			name:     "3D Vectors",
+			vecA:     F32{1, 2, 3},
+			vecB:     F32{4, 5, 6},
+			expected: 27,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := SquaredEuclideanDistance(tt.vecA, tt.vecB)
+			if !floatEquals(result, tt.expected, 1e-6) {
+				t.Errorf("SquaredEuclideanDistance(%v, %v) = %v, want %v", tt.vecA, tt.vecB, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestDotProductDistance(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -174,6 +211,7 @@ func TestDistanceFunctionPanics(t *testing.T) {
 	}{
 		{"CosineDistance", CosineDistance},
 		{"EuclideanDistance", EuclideanDistance},
+		{"SquaredEuclideanDistance", SquaredEuclideanDistance},
 		{"DotProductDistance", DotProductDistance},
 		{"ManhattanDistance", ManhattanDistance},
 	}
