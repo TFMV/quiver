@@ -609,3 +609,74 @@ func TestSearchWithFacetsNoResults(t *testing.T) {
 		t.Fatalf("expected no results, got %d", len(res))
 	}
 }
+
+func TestAddVectorImmutability(t *testing.T) {
+	c := NewCollection("immut", 3, vectortypes.CosineDistance)
+	vec := []float32{1, 2, 3}
+	meta := map[string]string{"a": "b"}
+	if err := c.AddVector("v1", vec, meta); err != nil {
+		t.Fatalf("failed to add vector: %v", err)
+	}
+
+	vec[0] = 9
+	meta["a"] = "c"
+
+	storedVec, storedMeta, err := c.GetVector("v1")
+	if err != nil {
+		t.Fatalf("failed to get vector: %v", err)
+	}
+	if storedVec[0] == 9 {
+		t.Error("stored vector modified when original slice changed")
+	}
+	if storedMeta["a"] != "b" {
+		t.Error("stored metadata modified when original map changed")
+	}
+}
+
+func TestGetVectorImmutability(t *testing.T) {
+	c := NewCollection("immut2", 3, vectortypes.CosineDistance)
+	if err := c.AddVector("v1", []float32{1, 2, 3}, map[string]string{"a": "b"}); err != nil {
+		t.Fatalf("failed to add vector: %v", err)
+	}
+
+	v, m, err := c.GetVector("v1")
+	if err != nil {
+		t.Fatalf("failed to get vector: %v", err)
+	}
+	v[0] = 8
+	m["a"] = "c"
+
+	v2, m2, err := c.GetVector("v1")
+	if err != nil {
+		t.Fatalf("failed to get vector again: %v", err)
+	}
+	if v2[0] != 1 {
+		t.Error("vector modified through returned slice")
+	}
+	if m2["a"] != "b" {
+		t.Error("metadata modified through returned map")
+	}
+}
+
+func TestGetVectorsImmutability(t *testing.T) {
+	c := NewCollection("immut3", 3, vectortypes.CosineDistance)
+	if err := c.AddVector("v1", []float32{1, 2, 3}, map[string]string{"a": "b"}); err != nil {
+		t.Fatalf("failed to add vector: %v", err)
+	}
+
+	recs := c.GetVectors()
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+
+	recs[0].Vector[0] = 9
+	recs[0].Metadata["a"] = "c"
+
+	recs2 := c.GetVectors()
+	if recs2[0].Vector[0] != 1 {
+		t.Error("vector modified through returned records")
+	}
+	if recs2[0].Metadata["a"] != "b" {
+		t.Error("metadata modified through returned records")
+	}
+}

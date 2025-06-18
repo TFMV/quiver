@@ -71,14 +71,19 @@ func (c *Collection) GetVectors() []VectorRecord {
 
 	records := make([]VectorRecord, 0, len(c.vectors))
 	for id, vector := range c.vectors {
+		vecCopy := make([]float32, len(vector))
+		copy(vecCopy, vector)
 		record := VectorRecord{
 			ID:     id,
-			Vector: vector,
+			Vector: vecCopy,
 		}
 
-		// Add metadata if exists
 		if meta, ok := c.metadata[id]; ok {
-			record.Metadata = meta
+			metaCopy := make(map[string]string, len(meta))
+			for k, v := range meta {
+				metaCopy[k] = v
+			}
+			record.Metadata = metaCopy
 		}
 
 		records = append(records, record)
@@ -97,17 +102,23 @@ func (c *Collection) AddVector(id string, vector []float32, metadata map[string]
 		return fmt.Errorf("vector dimension mismatch: got %d, expected %d", len(vector), c.dimension)
 	}
 
-	// Store vector
-	c.vectors[id] = vector
+	// Store a copy of the vector to prevent external modifications
+	vecCopy := make([]float32, len(vector))
+	copy(vecCopy, vector)
+	c.vectors[id] = vecCopy
 
 	// Store metadata if provided
 	if metadata != nil {
-		c.metadata[id] = metadata
+		metaCopy := make(map[string]string, len(metadata))
+		for k, v := range metadata {
+			metaCopy[k] = v
+		}
+		c.metadata[id] = metaCopy
 
 		// Extract and store facets if facet fields are defined
 		if len(c.facetFields) > 0 {
 			// Convert string map to interface map for facet extraction
-			metadataMap := make(map[string]interface{})
+			metadataMap := make(map[string]interface{}, len(metadata))
 			for k, v := range metadata {
 				metadataMap[k] = v
 			}
@@ -157,10 +168,19 @@ func (c *Collection) GetVector(id string) ([]float32, map[string]string, error) 
 		return nil, nil, fmt.Errorf("vector with ID %s not found", id)
 	}
 
-	// Get metadata if exists
-	metadata := c.metadata[id]
+	vecCopy := make([]float32, len(vector))
+	copy(vecCopy, vector)
 
-	return vector, metadata, nil
+	meta, ok := c.metadata[id]
+	var metaCopy map[string]string
+	if ok {
+		metaCopy = make(map[string]string, len(meta))
+		for k, v := range meta {
+			metaCopy[k] = v
+		}
+	}
+
+	return vecCopy, metaCopy, nil
 }
 
 // IsDirty returns whether the collection has been modified since last save
@@ -181,6 +201,13 @@ func (c *Collection) MarkClean() {
 func (c *Collection) Search(query []float32, limit int) ([]SearchResult, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+
+	if c.distanceFunc == nil {
+		return nil, fmt.Errorf("distance function is not set")
+	}
+	if query == nil {
+		return nil, fmt.Errorf("query vector is nil")
+	}
 
 	// Validate query vector dimension
 	if len(query) != c.dimension {
@@ -271,6 +298,13 @@ func (c *Collection) GetVectorFacets(id string) ([]facets.FacetValue, bool) {
 func (c *Collection) SearchWithFacets(query []float32, limit int, filters []facets.Filter) ([]SearchResult, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+
+	if c.distanceFunc == nil {
+		return nil, fmt.Errorf("distance function is not set")
+	}
+	if query == nil {
+		return nil, fmt.Errorf("query vector is nil")
+	}
 
 	// Validate query vector dimension
 	if len(query) != c.dimension {
