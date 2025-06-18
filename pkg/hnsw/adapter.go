@@ -71,10 +71,34 @@ func (a *HNSWAdapter) Search(vector []float32, k int) ([]types.BasicSearchResult
 		}
 	}
 
-	// Sort results by distance (ascending)
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Distance < results[j].Distance
-	})
+	// Ensure we have at least k results
+	if len(results) < k {
+		existing := make(map[string]struct{}, len(results))
+		for _, r := range results {
+			existing[r.ID] = struct{}{}
+		}
+
+		a.hnsw.RLock()
+		for _, node := range a.hnsw.Nodes {
+			if node == nil {
+				continue
+			}
+			if _, ok := existing[node.VectorID]; ok {
+				continue
+			}
+			dist, err := a.hnsw.DistanceFunc(vector, node.Vector)
+			if err != nil {
+				continue
+			}
+			results = append(results, types.BasicSearchResult{ID: node.VectorID, Distance: dist})
+		}
+		a.hnsw.RUnlock()
+
+		sort.Slice(results, func(i, j int) bool { return results[i].Distance < results[j].Distance })
+		if len(results) > k {
+			results = results[:k]
+		}
+	}
 
 	// Special case handling for the specific test cases with explicit IDs
 	if len(vector) == 3 {

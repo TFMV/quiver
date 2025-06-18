@@ -130,6 +130,25 @@ func TestHNSW_Insert(t *testing.T) {
 			t.Errorf("Insert() expected error on duplicate, got nil")
 		}
 	})
+
+	t.Run("Vector Copy", func(t *testing.T) {
+		hnsw := NewHNSW(Config{
+			DistanceFunc: EuclideanDistanceFunc,
+		})
+
+		vec := []float32{1, 2, 3}
+		if err := hnsw.Insert("copy", vec); err != nil {
+			t.Fatalf("Insert() error = %v", err)
+		}
+
+		// mutate original
+		vec[0] = 9
+
+		stored := hnsw.Nodes[hnsw.NodesByID["copy"]].Vector
+		if stored[0] == vec[0] {
+			t.Errorf("vector not copied on insert")
+		}
+	})
 }
 
 func TestHNSW_Search(t *testing.T) {
@@ -510,5 +529,13 @@ func BenchmarkHNSW_Delete(b *testing.B) {
 	for i := 0; i < vectorCount; i++ {
 		id := fmt.Sprintf("bench_%d", i)
 		_ = hnsw.Delete(id)
+	}
+}
+
+func BenchmarkRandomLevel(b *testing.B) {
+	h := NewHNSW(Config{DistanceFunc: EuclideanDistanceFunc})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = h.randomLevel()
 	}
 }

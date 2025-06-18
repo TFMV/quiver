@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // DistanceFunction is a function type that computes the distance between two vectors
@@ -80,6 +80,8 @@ type HNSW struct {
 	sync.RWMutex
 	// size is the number of elements in the index
 	size uint32
+	// rng is used for random level generation without global contention
+	rng *rand.Rand
 }
 
 // Result represents a single search result
@@ -162,6 +164,7 @@ func NewHNSW(config Config) *HNSW {
 		DistanceFunc:   config.DistanceFunc,
 		EntryPoint:     0,
 		size:           0,
+		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -172,6 +175,9 @@ func (h *HNSW) Size() uint32 {
 
 // computeDistance calculates the distance between two vectors
 func (h *HNSW) computeDistance(a, b []float32) (float32, error) {
+	if h.DistanceFunc == nil {
+		return 0, errors.New("distance function not defined")
+	}
 	return h.DistanceFunc(a, b)
 }
 
@@ -193,9 +199,13 @@ func (h *HNSW) Insert(id string, vector []float32) error {
 
 	// Create a new node
 	newNodeIdx := uint32(len(h.Nodes))
+
+	vecCopy := make([]float32, len(vector))
+	copy(vecCopy, vector)
+
 	newNode := &Node{
 		VectorID:    id,
-		Vector:      vector,
+		Vector:      vecCopy,
 		Connections: make([][]uint32, level+1),
 		Level:       level,
 	}
@@ -579,11 +589,6 @@ func (h *HNSW) Search(queryVector []float32, k int) ([]Result, error) {
 		return nil, err
 	}
 
-	// Sort results by distance
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Distance < results[j].Distance
-	})
-
 	// Limit to k results
 	if len(results) > k {
 		results = results[:k]
@@ -602,7 +607,7 @@ func (h *HNSW) randomLevel() int {
 	maxAttempts := min(h.MaxLevel, 10) // Limit max attempts for sanity
 
 	for i := 0; i < maxAttempts; i++ {
-		if rand.Float64() < 0.25 {
+		if h.rng.Float64() < 0.25 {
 			level++
 		} else {
 			break
