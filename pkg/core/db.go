@@ -284,6 +284,11 @@ func (db *DB) CreateCollection(name string, dimension int, distanceFunc vectorty
 		return nil, fmt.Errorf("%w: %s", ErrCollectionExists, name)
 	}
 
+	// Validate dimension
+	if dimension <= 0 {
+		return nil, ErrInvalidDimension
+	}
+
 	var index Index
 	// Default distance function name for persistence
 	var distFuncName string = "cosine"

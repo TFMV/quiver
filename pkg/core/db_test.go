@@ -216,6 +216,16 @@ func TestDB_CreateCollection(t *testing.T) {
 		}
 	})
 
+	t.Run("Create Collection With Invalid Dimension", func(t *testing.T) {
+		_, err := db.CreateCollection("invalid_dim", 0, vectortypes.GetSurfaceByType(vectortypes.Cosine))
+		if err == nil {
+			t.Error("expected error for dimension <= 0")
+		}
+		if !errors.Is(err, ErrInvalidDimension) {
+			t.Errorf("CreateCollection() error = %v, want %v", err, ErrInvalidDimension)
+		}
+	})
+
 	t.Run("Create Collection with Different Distance Functions", func(t *testing.T) {
 		tests := []struct {
 			name           string
