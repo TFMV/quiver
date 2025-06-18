@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -215,15 +216,9 @@ type SearchResult struct {
 
 // SortSearchResults sorts search results by distance (ascending)
 func SortSearchResults(results []SearchResult) {
-	// Simple bubble sort for now
-	n := len(results)
-	for i := 0; i < n-1; i++ {
-		for j := 0; j < n-i-1; j++ {
-			if results[j].Distance > results[j+1].Distance {
-				results[j], results[j+1] = results[j+1], results[j]
-			}
-		}
-	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Distance < results[j].Distance
+	})
 }
 
 // Count returns the number of vectors in the collection

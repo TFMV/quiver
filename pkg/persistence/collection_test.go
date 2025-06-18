@@ -583,3 +583,29 @@ func TestFacetFields(t *testing.T) {
 		t.Errorf("Expected only v3 in results, got %v", results)
 	}
 }
+
+func TestSearchWithFacetsDimensionMismatch(t *testing.T) {
+	c := NewCollection("mismatch", 3, vectortypes.CosineDistance)
+	c.SetFacetFields([]string{"type"})
+	if err := c.AddVector("v1", []float32{0.1, 0.2, 0.3}, map[string]string{"type": "a"}); err != nil {
+		t.Fatalf("failed to add vector: %v", err)
+	}
+	_, err := c.SearchWithFacets([]float32{0.1, 0.2}, 1, nil)
+	if err == nil {
+		t.Fatal("expected error for query dimension mismatch")
+	}
+}
+
+func TestSearchWithFacetsNoResults(t *testing.T) {
+	c := NewCollection("noresults", 3, vectortypes.CosineDistance)
+	c.SetFacetFields([]string{"type"})
+	c.AddVector("v1", []float32{1, 0, 0}, map[string]string{"type": "a"})
+	filters := []facets.Filter{&facets.EqualityFilter{FieldName: "type", Value: "b"}}
+	res, err := c.SearchWithFacets([]float32{1, 0, 0}, 5, filters)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res) != 0 {
+		t.Fatalf("expected no results, got %d", len(res))
+	}
+}
