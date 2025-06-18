@@ -315,6 +315,19 @@ func TestHybridIndex_SearchWithRequest(t *testing.T) {
 	}
 }
 
+func TestHybridIndex_DimensionMismatch(t *testing.T) {
+	idx := NewHybridIndex(DefaultIndexConfig())
+	if err := idx.Insert("v1", vectortypes.F32{0.1, 0.2}); err != nil {
+		t.Fatalf("insert failed: %v", err)
+	}
+	if err := idx.Insert("v2", vectortypes.F32{0.3}); err == nil {
+		t.Errorf("expected dimension mismatch on insert")
+	}
+	if _, err := idx.Search(vectortypes.F32{0.3}, 1); err == nil {
+		t.Errorf("expected dimension mismatch on search")
+	}
+}
+
 func TestHybridIndex_searchWithStrategy(t *testing.T) {
 	idx := NewHybridIndex(DefaultIndexConfig())
 

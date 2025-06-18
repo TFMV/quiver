@@ -310,3 +310,21 @@ func TestResultHeap(t *testing.T) {
 		}
 	}
 }
+
+func TestExactIndex_DimensionMismatch(t *testing.T) {
+	idx := NewExactIndex(vectortypes.CosineDistance)
+	if err := idx.Insert("vec1", vectortypes.F32{0.1, 0.2}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := idx.Insert("vec2", vectortypes.F32{0.3}); err == nil {
+		t.Errorf("expected dimension mismatch error")
+	}
+}
+
+func TestExactIndex_SearchDimensionMismatch(t *testing.T) {
+	idx := NewExactIndex(vectortypes.CosineDistance)
+	_ = idx.Insert("vec1", vectortypes.F32{0.1, 0.2})
+	if _, err := idx.Search(vectortypes.F32{0.3}, 1); err == nil {
+		t.Errorf("expected dimension mismatch error")
+	}
+}

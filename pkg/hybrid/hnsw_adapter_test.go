@@ -230,3 +230,16 @@ func TestHNSWAdapter_SetSearchEf(t *testing.T) {
 		t.Fatalf("Search failed after SetSearchEf: %v", err)
 	}
 }
+
+func TestHNSWAdapter_DimensionMismatch(t *testing.T) {
+	adapter := NewHNSWAdapter(vectortypes.CosineDistance, DefaultHNSWConfig())
+	if err := adapter.Insert("v1", vectortypes.F32{0.1, 0.2}); err != nil {
+		t.Fatalf("insert failed: %v", err)
+	}
+	if err := adapter.Insert("v2", vectortypes.F32{0.1}); err == nil {
+		t.Errorf("expected dimension mismatch error")
+	}
+	if _, err := adapter.Search(vectortypes.F32{0.1}, 1); err == nil {
+		t.Errorf("expected query dimension mismatch")
+	}
+}
