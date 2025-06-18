@@ -2,6 +2,7 @@ package facets
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 )
@@ -116,6 +117,13 @@ func TestRangeFilter(t *testing.T) {
 	}
 	if !numericFilter.Match(float64Val) {
 		t.Error("Failed to match float64 value")
+	}
+}
+
+func TestRangeFilterLargeInt64(t *testing.T) {
+	filter := NewRangeFilter("big", 0, int64(math.MaxInt64), true, true)
+	if !filter.Match(int64(math.MaxInt64)) {
+		t.Error("Failed to match large int64 value")
 	}
 }
 
@@ -403,6 +411,16 @@ func TestMatchesAllFilters(t *testing.T) {
 	}
 }
 
+func TestMatchesAllFiltersEmptyValue(t *testing.T) {
+	facets := []FacetValue{
+		{Field: "tags", Value: []string{}},
+	}
+
+	if MatchesAllFilters(facets, []Filter{NewExistsFilter("tags", true)}) {
+		t.Errorf("Expected false for empty slice existence check")
+	}
+}
+
 func TestFacetsFromJSON(t *testing.T) {
 	jsonMetadata := []byte(`{
 		"category": "electronics",
@@ -501,5 +519,43 @@ func TestFacetValue_JSONRoundTrip(t *testing.T) {
 					i, decoded[i].Value, original.Value)
 			}
 		}
+	}
+}
+
+func BenchmarkMatchesAllFilters(b *testing.B) {
+	facets := []FacetValue{
+		{Field: "category", Value: "electronics"},
+		{Field: "price", Value: 299.99},
+		{Field: "active", Value: true},
+		{Field: "tags", Value: []string{"smartphone", "android", "5G"}},
+	}
+	filters := []Filter{
+		NewEqualityFilter("category", "electronics"),
+		NewRangeFilter("price", 200.0, 300.0, true, true),
+		NewExistsFilter("tags", true),
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if !MatchesAllFilters(facets, filters) {
+			b.Fatal("unexpected false")
+		}
+	}
+}
+
+func BenchmarkExtractFacets(b *testing.B) {
+	metadata := map[string]interface{}{
+		"category": "electronics",
+		"price":    299.99,
+		"active":   true,
+		"tags":     []string{"smartphone", "android", "5G"},
+		"specs": map[string]interface{}{
+			"ram":   "8GB",
+			"color": "black",
+		},
+	}
+	fields := []string{"category", "price", "active", "tags", "specs.ram"}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = ExtractFacets(metadata, fields)
 	}
 }

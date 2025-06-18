@@ -4,6 +4,7 @@ package facets
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 )
@@ -129,6 +130,9 @@ func (f *RangeFilter) Match(value interface{}) bool {
 	case int32:
 		return f.compareInt(int(v))
 	case int64:
+		if v > int64(math.MaxInt) || v < int64(math.MinInt) {
+			return f.compareFloat(float64(v))
+		}
 		return f.compareInt(int(v))
 	case float32:
 		return f.compareFloat(float64(v))
@@ -430,7 +434,7 @@ func MatchesAllFilters(facets []FacetValue, filters []Filter) bool {
 	}
 
 	// Create a map for O(1) field lookups
-	facetMap := make(map[string]interface{})
+	facetMap := make(map[string]interface{}, len(facets))
 	for _, facet := range facets {
 		facetMap[facet.Field] = facet.Value
 	}
@@ -438,17 +442,10 @@ func MatchesAllFilters(facets []FacetValue, filters []Filter) bool {
 	// Check each filter
 	for _, filter := range filters {
 		value, exists := facetMap[filter.Field()]
-
-		// Special handling for exists filter
-		if existsFilter, ok := filter.(*ExistsFilter); ok {
-			if exists != existsFilter.ShouldExist {
-				return false
-			}
-			continue
+		if !exists && filter.Type() != TypeExists {
+			return false
 		}
-
-		// For other filters, if field doesn't exist, or doesn't match, return false
-		if !exists || !filter.Match(value) {
+		if !filter.Match(value) {
 			return false
 		}
 	}
