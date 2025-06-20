@@ -14,15 +14,15 @@ Accompanying write-ups are available on Medium.
 
 ## Supported Index Types
 
-Quiver offers two powerful index types, both of which can be backed by durable storage:
+Quiver offers three powerful index types, each of which can be backed by durable storage:
 
 1. **HNSW Index**: The classic HNSW (Hierarchical Navigable Small World) graph implementation. This in-memory index offers a great balance of speed and recall for most use cases. It's fast, memory-efficient, and perfect for medium-sized datasets.
 
 2. **Hybrid Index**: Our most advanced index type that combines multiple search strategies to optimize for both speed and recall. It can automatically select between exact search (for small datasets) and approximate search (for larger datasets), and includes optimizations for different query patterns. The hybrid index is particularly effective for datasets with varying sizes and query patterns.
 
-3. **ArrowHNSW Index**: An Apache Arrow backed variant of HNSW for zero-copy columnar storage and optional Parquet persistence.
+3. **Arrow HNSW Index**: An Apache Arrow backed variant of HNSW for zero-copy columnar storage and optional Parquet persistence.
 
-Both index types can be backed by **Parquet Storage**, which efficiently persists vectors to disk in Parquet format. This makes them suitable for larger datasets that need durability while maintaining good performance characteristics.
+All index types can be backed by **Parquet Storage**, which efficiently persists vectors to disk in Parquet format. This makes them suitable for larger datasets that need durability while maintaining good performance characteristics.
 
 All index types support metadata filtering and negative examples. Choose the right index type for your needs and let APT optimize your parameters automatically!
 
