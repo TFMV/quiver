@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/apache/arrow/go/arrow/array"
-	"github.com/apache/arrow/go/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 )
 
 func TestArrowHNSWIndex_AddSearch(t *testing.T) { // arrow-hnsw
@@ -14,14 +14,14 @@ func TestArrowHNSWIndex_AddSearch(t *testing.T) { // arrow-hnsw
 	b.AppendValues([]float32{1, 0, 0}, nil)
 	vec := b.NewArray()
 	defer vec.Release()
-	if err := idx.Add(vec, "v1"); err != nil {
+	if err := idx.Add(vec.(*array.Float32), "v1"); err != nil {
 		t.Fatalf("add: %v", err)
 	}
 	b2 := array.NewFloat32Builder(memory.DefaultAllocator)
 	b2.AppendValues([]float32{0.9, 0, 0}, nil)
 	q := b2.NewArray()
 	defer q.Release()
-	res, err := idx.Search(q, 1)
+	res, err := idx.Search(q.(*array.Float32), 1)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestArrowHNSWIndex_SaveLoad(t *testing.T) { // arrow-hnsw
 	b.AppendValues([]float32{1, 2}, nil)
 	vec := b.NewArray()
 	defer vec.Release()
-	if err := idx.Add(vec, "a"); err != nil {
+	if err := idx.Add(vec.(*array.Float32), "a"); err != nil {
 		t.Fatalf("add: %v", err)
 	}
 	path := "test_arrow_hnsw.arrow"
@@ -53,7 +53,7 @@ func TestArrowHNSWIndex_SaveLoad(t *testing.T) { // arrow-hnsw
 	b2.AppendValues([]float32{1, 2}, nil)
 	q := b2.NewArray()
 	defer q.Release()
-	res, err := idx2.Search(q, 1)
+	res, err := idx2.Search(q.(*array.Float32), 1)
 	if err != nil || len(res) != 1 || res[0].ID != "0" { // loaded id string is index string
 		t.Fatalf("unexpected search result after load: %v %+v", err, res)
 	}

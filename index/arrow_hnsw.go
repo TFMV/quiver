@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/apache/arrow/go/arrow"
-	"github.com/apache/arrow/go/arrow/array"
-	"github.com/apache/arrow/go/arrow/ipc"
-	"github.com/apache/arrow/go/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/TFMV/quiver/pkg/arrowindex"
 )
@@ -42,17 +42,13 @@ func NewArrowHNSWIndex(dim int) *ArrowHNSWIndex { // arrow-hnsw
 }
 
 // Add inserts a vector with the given ID into the index.
-func (idx *ArrowHNSWIndex) Add(vec arrow.Array, id string) error { // arrow-hnsw
-	arr, ok := vec.(*array.Float32)
-	if !ok {
-		return fmt.Errorf("expected Float32 array")
-	}
-	if arr.Len() != idx.dim {
-		return fmt.Errorf("dimension mismatch: got %d want %d", arr.Len(), idx.dim)
+func (idx *ArrowHNSWIndex) Add(vec *array.Float32, id string) error { // arrow-hnsw
+	if vec.Len() != idx.dim {
+		return fmt.Errorf("dimension mismatch: got %d want %d", vec.Len(), idx.dim)
 	}
 	vals := make([]float64, idx.dim)
 	for i := 0; i < idx.dim; i++ {
-		vals[i] = float64(arr.Value(i))
+		vals[i] = float64(vec.Value(i))
 	}
 	internal := len(idx.idToIdx)
 	idx.idToIdx[id] = internal
@@ -61,17 +57,13 @@ func (idx *ArrowHNSWIndex) Add(vec arrow.Array, id string) error { // arrow-hnsw
 }
 
 // Search returns the k nearest results to the query vector.
-func (idx *ArrowHNSWIndex) Search(query arrow.Array, k int) ([]Result, error) { // arrow-hnsw
-	arr, ok := query.(*array.Float32)
-	if !ok {
-		return nil, fmt.Errorf("expected Float32 array")
-	}
-	if arr.Len() != idx.dim {
-		return nil, fmt.Errorf("dimension mismatch: got %d want %d", arr.Len(), idx.dim)
+func (idx *ArrowHNSWIndex) Search(query *array.Float32, k int) ([]Result, error) { // arrow-hnsw
+	if query.Len() != idx.dim {
+		return nil, fmt.Errorf("dimension mismatch: got %d want %d", query.Len(), idx.dim)
 	}
 	q := make([]float64, idx.dim)
 	for i := 0; i < idx.dim; i++ {
-		q[i] = float64(arr.Value(i))
+		q[i] = float64(query.Value(i))
 	}
 	indices, err := idx.graph.Search(q, k)
 	if err != nil {
@@ -127,7 +119,10 @@ func (idx *ArrowHNSWIndex) Save(path string) error { // arrow-hnsw
 		return err
 	}
 	defer f.Close()
-	w := ipc.NewFileWriter(f, ipc.WithSchema(schema))
+	w, err := ipc.NewFileWriter(f, ipc.WithSchema(schema))
+	if err != nil {
+		return err
+	}
 	if err := w.Write(rec); err != nil {
 		w.Close()
 		return err
@@ -160,7 +155,7 @@ func (idx *ArrowHNSWIndex) Load(path string) error { // arrow-hnsw
 		vb.AppendValues(vecSlice, nil)
 		arr := vb.NewArray()
 		idStr := fmt.Sprintf("%d", ids.Value(i))
-		if err := idx.Add(arr, idStr); err != nil {
+		if err := idx.Add(arr.(*array.Float32), idStr); err != nil {
 			arr.Release()
 			vb.Release()
 			return err
