@@ -610,3 +610,21 @@ func randomLevel() int {
 	}
 	return lvl
 }
+
+// GetVector returns the vector at the given internal index.
+func (g *Graph) GetVector(idx int) []float64 {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.getVectorFast(idx)
+}
+
+// GetVectorByID returns the vector for the given external ID.
+func (g *Graph) GetVectorByID(id int) ([]float64, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	idx, ok := g.idToIdx[id]
+	if !ok {
+		return nil, false
+	}
+	return g.getVectorFast(idx), true
+}
