@@ -12,67 +12,159 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 )
 
+// VisitedList represents a reusable visited tracking structure inspired by hnswlib
+type VisitedList struct {
+	curV uint16
+	mass []uint16
+}
+
+// NewVisitedList creates a new visited list with the given capacity
+func NewVisitedList(capacity int) *VisitedList {
+	return &VisitedList{
+		curV: 1,
+		mass: make([]uint16, capacity),
+	}
+}
+
+// Reset prepares the visited list for reuse
+func (vl *VisitedList) Reset() {
+	vl.curV++
+	if vl.curV == 0 {
+		for i := range vl.mass {
+			vl.mass[i] = 0
+		}
+		vl.curV = 1
+	}
+}
+
+// IsVisited checks if an index has been visited
+func (vl *VisitedList) IsVisited(idx int) bool {
+	if idx >= len(vl.mass) {
+		oldLen := len(vl.mass)
+		newMass := make([]uint16, idx+1)
+		copy(newMass, vl.mass)
+		vl.mass = newMass
+		for i := oldLen; i < len(newMass); i++ {
+			vl.mass[i] = 0
+		}
+	}
+	return vl.mass[idx] == vl.curV
+}
+
+// Visit marks an index as visited
+func (vl *VisitedList) Visit(idx int) {
+	if idx >= len(vl.mass) {
+		oldLen := len(vl.mass)
+		newMass := make([]uint16, idx+1)
+		copy(newMass, vl.mass)
+		vl.mass = newMass
+		for i := oldLen; i < len(newMass); i++ {
+			vl.mass[i] = 0
+		}
+	}
+	vl.mass[idx] = vl.curV
+}
+
+// VisitedListPool manages a pool of VisitedList instances
+type VisitedListPool struct {
+	pool    []*VisitedList
+	mutex   sync.Mutex
+	maxSize int
+}
+
+// NewVisitedListPool creates a new visited list pool
+func NewVisitedListPool(maxSize int) *VisitedListPool {
+	pool := &VisitedListPool{
+		pool:    make([]*VisitedList, 0, 4),
+		maxSize: maxSize,
+	}
+	for i := 0; i < 2; i++ {
+		pool.pool = append(pool.pool, NewVisitedList(maxSize))
+	}
+	return pool
+}
+
+// Get retrieves a visited list from the pool
+func (vlp *VisitedListPool) Get() *VisitedList {
+	vlp.mutex.Lock()
+	defer vlp.mutex.Unlock()
+
+	if len(vlp.pool) > 0 {
+		vl := vlp.pool[len(vlp.pool)-1]
+		vlp.pool = vlp.pool[:len(vlp.pool)-1]
+		vl.Reset()
+		return vl
+	}
+	return NewVisitedList(vlp.maxSize)
+}
+
+// Return returns a visited list to the pool
+func (vlp *VisitedListPool) Return(vl *VisitedList) {
+	vlp.mutex.Lock()
+	defer vlp.mutex.Unlock()
+
+	if len(vlp.pool) < 8 {
+		vlp.pool = append(vlp.pool, vl)
+	}
+}
+
 // Node represents a point in the HNSW graph.
 type Node struct {
-	ID        int     // user-provided ID
-	idx       int     // internal index in storage
-	level     int     // maximum layer
-	neighbors [][]int // neighbor indices per level
+	ID        int
+	idx       int
+	level     int
+	neighbors [][]int
 }
 
 // NewNode creates a new node with properly initialized neighbor slices.
 func NewNode(id, idx, level int) *Node {
 	neighbors := make([][]int, level+1)
-	// Pre-allocate neighbor slices to reduce allocations
 	for i := range neighbors {
-		neighbors[i] = make([]int, 0, 16) // Pre-allocate capacity
+		neighbors[i] = make([]int, 0, 32)
 	}
-	return &Node{
-		ID:        id,
-		idx:       idx,
-		level:     level,
-		neighbors: neighbors,
-	}
+	return &Node{ID: id, idx: idx, level: level, neighbors: neighbors}
 }
 
 // Graph is the main HNSW index structure.
 type Graph struct {
-	// HNSW parameters
 	m              int
 	efConstruction int
 	efSearch       int
+	ml             float64
 
-	// chunked arrow storage for vectors (flat float64 values)
 	dim       int
 	chunkSize int
 	allocator memory.Allocator
-	vectors   []*array.Float64      // stores flat float64 values: rows * dim
-	builder   *array.Float64Builder // current chunk builder
+	vectors   []*array.Float64
+	builder   *array.Float64Builder
 
-	// graph structure
 	maxLevel   int
 	enterPoint *Node
 	nodes      []*Node
 	idToIdx    map[int]int
-	levelFunc  func() int // function to determine node level
+	levelFunc  func() int
 
-	// pools for zero-allocation operations
-	pqPool   sync.Pool // *minHeap
-	resPool  sync.Pool // *maxHeap
-	vecPool  sync.Pool // []float64 for getVector
-	candPool sync.Pool // []*candidate for reuse
-	intPool  sync.Pool // []int for neighbor lists
+	pqPool      sync.Pool
+	resPool     sync.Pool
+	vecPool     sync.Pool
+	candPool    sync.Pool
+	intPool     sync.Pool
+	visitedPool *VisitedListPool
 
 	mu sync.RWMutex
 }
 
 // NewGraph initializes an HNSW index.
 func NewGraph(dim, m, efConstruction, efSearch, chunkSize int, alloc memory.Allocator) *Graph {
+	if efConstruction < m {
+		efConstruction = m
+	}
 	maxEF := max(efSearch, efConstruction)
 	g := &Graph{
 		m:              m,
 		efConstruction: efConstruction,
 		efSearch:       efSearch,
+		ml:             1.0 / math.Log(2.0),
 		dim:            dim,
 		chunkSize:      chunkSize,
 		allocator:      alloc,
@@ -80,10 +172,11 @@ func NewGraph(dim, m, efConstruction, efSearch, chunkSize int, alloc memory.Allo
 		builder:        array.NewFloat64Builder(alloc),
 		nodes:          make([]*Node, 0),
 		idToIdx:        make(map[int]int),
-		levelFunc:      randomLevel, // default to random level
+		visitedPool:    NewVisitedListPool(50000),
 	}
 
-	// Initialize pools for better memory management
+	g.levelFunc = func() int { return g.randomLevel() }
+
 	g.pqPool = sync.Pool{New: func() any {
 		hs := make(minHeap, 0, maxEF)
 		heap.Init(&hs)
@@ -94,15 +187,9 @@ func NewGraph(dim, m, efConstruction, efSearch, chunkSize int, alloc memory.Allo
 		heap.Init(&hs)
 		return &hs
 	}}
-	g.vecPool = sync.Pool{New: func() any {
-		return make([]float64, dim)
-	}}
-	g.candPool = sync.Pool{New: func() any {
-		return make([]*candidate, 0, maxEF)
-	}}
-	g.intPool = sync.Pool{New: func() any {
-		return make([]int, 0, m*2)
-	}}
+	g.vecPool = sync.Pool{New: func() any { return make([]float64, dim) }}
+	g.candPool = sync.Pool{New: func() any { return make([]*candidate, 0, maxEF) }}
+	g.intPool = sync.Pool{New: func() any { return make([]int, 0, m*4) }}
 
 	return g
 }
@@ -119,14 +206,12 @@ func (g *Graph) AddBatch(items []struct {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// Validate all vectors first
 	for _, item := range items {
 		if len(item.Vec) != g.dim {
 			return fmt.Errorf("vector dimension mismatch: got %d, want %d", len(item.Vec), g.dim)
 		}
 	}
 
-	// Batch append vectors to builder
 	for _, item := range items {
 		g.builder.AppendValues(item.Vec, nil)
 		if g.builder.Len()/g.dim >= g.chunkSize {
@@ -136,7 +221,6 @@ func (g *Graph) AddBatch(items []struct {
 		}
 	}
 
-	// Process nodes in batch
 	nodes := make([]*Node, len(items))
 	startPos := len(g.nodes)
 
@@ -144,120 +228,146 @@ func (g *Graph) AddBatch(items []struct {
 		pos := startPos + i
 		g.idToIdx[item.ID] = pos
 		nodes[i] = NewNode(item.ID, pos, g.levelFunc())
-
-		// Update max level if needed
 		if nodes[i].level > g.maxLevel {
 			g.maxLevel = nodes[i].level
 			g.enterPoint = nodes[i]
 		}
 	}
 
-	// Add all nodes to graph first
 	g.nodes = append(g.nodes, nodes...)
 
-	// Connect nodes to graph
 	for i, item := range items {
 		n := nodes[i]
 		pos := startPos + i
 
-		// Skip first node
 		if pos == 0 {
 			g.enterPoint = n
 			g.maxLevel = n.level
 			continue
 		}
 
-		// Find enter point if none exists
 		if g.enterPoint == nil {
 			g.enterPoint = g.nodes[0]
 			g.maxLevel = g.enterPoint.level
 		}
 
-		// Connect to existing graph
 		g.connectNodeToGraph(n, item.Vec)
 	}
 
 	return nil
 }
 
-// connectNodeToGraph connects a node to the existing graph structure.
+// connectNodeToGraph connects a node to the existing graph structure with enhanced hnswlib-style algorithm.
 func (g *Graph) connectNodeToGraph(n *Node, vec []float64) {
 	cur := g.enterPoint
+	curDist := euclideanSquaredFast(vec, g.getVectorFast(cur.idx))
 
-	// Navigate down through levels
 	for lvl := g.maxLevel; lvl > n.level; lvl-- {
-		next := g.greedySearchLayerFast(vec, cur, lvl)
-		if next != nil {
-			cur = next
-		}
-	}
-
-	// Connect at each level from top to bottom
-	for lvl := min(n.level, g.maxLevel); lvl >= 0; lvl-- {
-		candidates := g.searchLayerFast(vec, cur, lvl, g.efConstruction)
-		if len(candidates) == 0 {
-			candidates = []*candidate{{idx: cur.idx, dist: euclideanSquared(vec, g.getVectorFast(cur.idx))}}
-		}
-
-		nbrs := selectNeighborsFast(candidates, g.m)
-
-		// Connect bidirectionally with optimized neighbor management
-		for _, c := range nbrs {
-			ni := c.idx
-			if ni >= len(g.nodes) {
-				continue
+		changed := true
+		for changed {
+			changed = false
+			if lvl >= len(cur.neighbors) {
+				break
 			}
-			peer := g.nodes[ni]
-
-			// Connect n -> peer
-			if lvl < len(n.neighbors) {
-				n.neighbors[lvl] = append(n.neighbors[lvl], ni)
-			}
-
-			// Connect peer -> n with pruning
-			if lvl < len(peer.neighbors) {
-				peer.neighbors[lvl] = append(peer.neighbors[lvl], n.idx)
-
-				// Prune peer's neighbors if exceeding limit
-				if len(peer.neighbors[lvl]) > g.m {
-					g.pruneNeighbors(peer, lvl)
+			for _, ni := range cur.neighbors[lvl] {
+				if ni >= len(g.nodes) {
+					continue
+				}
+				nbrVec := g.getVectorFast(ni)
+				d := euclideanSquaredFast(vec, nbrVec)
+				if d < curDist {
+					curDist = d
+					cur = g.nodes[ni]
+					changed = true
+					break
 				}
 			}
 		}
+	}
 
-		// Update current for next level
-		next := g.greedySearchLayerFast(vec, cur, lvl)
-		if next != nil {
-			cur = next
+	for lvl := min(n.level, g.maxLevel); lvl >= 0; lvl-- {
+		ef := g.efConstruction
+		if lvl == 0 {
+			ef = max(g.efConstruction, g.m*2)
+		}
+
+		candidates := g.searchLayerFast(vec, cur, lvl, ef)
+		if len(candidates) == 0 {
+			candidates = []*candidate{{idx: cur.idx, dist: curDist}}
+		}
+
+		mMax := g.m
+		if lvl == 0 {
+			mMax = g.m * 2
+		}
+		g.mutuallyConnectNewElement(n, candidates, lvl, mMax)
+
+		if len(candidates) > 0 {
+			cur = g.nodes[candidates[0].idx]
+			curDist = candidates[0].dist
 		}
 	}
 }
 
-// pruneNeighbors efficiently prunes neighbors using pooled resources.
-func (g *Graph) pruneNeighbors(node *Node, lvl int) {
-	if lvl >= len(node.neighbors) || len(node.neighbors[lvl]) <= g.m {
+// mutuallyConnectNewElement performs bidirectional connections with enhanced pruning
+func (g *Graph) mutuallyConnectNewElement(newNode *Node, candidates []*candidate, level, mMax int) []*candidate {
+	selected := g.selectNeighborsHeuristic(candidates, g.m)
+
+	if level < len(newNode.neighbors) {
+		for _, c := range selected {
+			newNode.neighbors[level] = append(newNode.neighbors[level], c.idx)
+		}
+	}
+
+	for _, c := range selected {
+		ni := c.idx
+		if ni >= len(g.nodes) {
+			continue
+		}
+		peer := g.nodes[ni]
+
+		if level < len(peer.neighbors) {
+			peer.neighbors[level] = append(peer.neighbors[level], newNode.idx)
+			if len(peer.neighbors[level]) > mMax {
+				g.pruneNeighborsHeuristic(peer, level)
+			}
+		}
+	}
+
+	return selected
+}
+
+// pruneNeighborsHeuristic efficiently prunes neighbors using improved hnswlib-style heuristic.
+func (g *Graph) pruneNeighborsHeuristic(node *Node, lvl int) {
+	mMax := g.m
+	if lvl == 0 {
+		mMax = g.m * 2
+	}
+
+	if lvl >= len(node.neighbors) || len(node.neighbors[lvl]) <= mMax {
 		return
 	}
 
-	// Get pooled candidate slice
 	candidates := g.candPool.Get().([]*candidate)[:0]
 	defer g.candPool.Put(candidates)
 
-	// Calculate distances to all neighbors
 	nodeVec := g.getVectorFast(node.idx)
 	for _, nbrIdx := range node.neighbors[lvl] {
 		if nbrIdx >= len(g.nodes) {
 			continue
 		}
 		nbrVec := g.getVectorFast(nbrIdx)
-		d := euclideanSquared(nodeVec, nbrVec)
+		d := euclideanSquaredFast(nodeVec, nbrVec)
 		candidates = append(candidates, &candidate{idx: nbrIdx, dist: d})
 	}
 
-	// Select top m neighbors
-	selected := selectNeighborsFast(candidates, g.m)
+	var selected []*candidate
+	if lvl == 0 && len(candidates) > mMax*3 {
+		selected = g.selectNeighborsAdvancedHeuristic(candidates, mMax)
+	} else {
+		selected = g.selectNeighborsHeuristic(candidates, mMax)
+	}
 
-	// Get pooled int slice for new neighbors
 	newNbrs := g.intPool.Get().([]int)[:0]
 	defer g.intPool.Put(newNbrs)
 
@@ -265,9 +375,56 @@ func (g *Graph) pruneNeighbors(node *Node, lvl int) {
 		newNbrs = append(newNbrs, s.idx)
 	}
 
-	// Replace neighbors
 	node.neighbors[lvl] = node.neighbors[lvl][:len(newNbrs)]
 	copy(node.neighbors[lvl], newNbrs)
+}
+
+// selectNeighborsAdvancedHeuristic implements the full hnswlib neighbor selection heuristic
+func (g *Graph) selectNeighborsAdvancedHeuristic(candidates []*candidate, m int) []*candidate {
+	if len(candidates) <= m {
+		return candidates
+	}
+
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].dist < candidates[j].dist })
+
+	selected := make([]*candidate, 0, m)
+	selected = append(selected, candidates[0])
+
+	for i := 1; i < len(candidates) && len(selected) < m; i++ {
+		cand := candidates[i]
+		candVec := g.getVectorFast(cand.idx)
+
+		shouldAdd := true
+		for _, sel := range selected {
+			selVec := g.getVectorFast(sel.idx)
+			distToSel := euclideanSquaredFast(candVec, selVec)
+			if distToSel < cand.dist {
+				shouldAdd = false
+				break
+			}
+		}
+
+		if shouldAdd {
+			selected = append(selected, cand)
+		}
+	}
+
+	if len(selected) < m {
+		for i := 1; i < len(candidates) && len(selected) < m; i++ {
+			found := false
+			for _, sel := range selected {
+				if sel.idx == candidates[i].idx {
+					found = true
+					break
+				}
+			}
+			if !found {
+				selected = append(selected, candidates[i])
+			}
+		}
+	}
+
+	return selected
 }
 
 // Add inserts a single point into the index.
@@ -294,19 +451,16 @@ func (g *Graph) Search(query []float64, k int) ([]int, error) {
 		k = len(g.nodes)
 	}
 
-	// Flush builder if needed
 	if g.builder.Len() > 0 {
 		chunk := g.builder.NewArray().(*array.Float64)
 		g.vectors = append(g.vectors, chunk)
 		g.builder = array.NewFloat64Builder(g.allocator)
 	}
 
-	// For small graphs, do optimized exhaustive search
 	if len(g.nodes) <= g.m {
 		return g.exhaustiveSearch(query, k), nil
 	}
 
-	// Fast HNSW search
 	return g.hnswSearch(query, k), nil
 }
 
@@ -317,7 +471,7 @@ func (g *Graph) exhaustiveSearch(query []float64, k int) []int {
 
 	for i := range g.nodes {
 		vec := g.getVectorFast(i)
-		d := euclideanSquared(query, vec)
+		d := euclideanSquaredFast(query, vec)
 		candidates = append(candidates, &candidate{idx: i, dist: d})
 	}
 
@@ -336,7 +490,6 @@ func (g *Graph) hnswSearch(query []float64, k int) []int {
 		ep = g.nodes[0]
 	}
 
-	// Descent through layers
 	for lvl := g.maxLevel; lvl > 0; lvl-- {
 		next := g.greedySearchLayerFast(query, ep, lvl)
 		if next != nil {
@@ -344,8 +497,8 @@ func (g *Graph) hnswSearch(query []float64, k int) []int {
 		}
 	}
 
-	// Search at level 0
-	candidates := g.searchLayerFast(query, ep, 0, max(g.efSearch, k))
+	ef := max(g.efSearch, k*2)
+	candidates := g.searchLayerFast(query, ep, 0, ef)
 	if len(candidates) == 0 {
 		return g.exhaustiveSearch(query, k)
 	}
@@ -371,32 +524,31 @@ func (g *Graph) greedySearchLayerFast(vec []float64, entry *Node, lvl int) *Node
 	improved := true
 	for improved {
 		improved = false
-
 		for _, ni := range cur.neighbors[lvl] {
 			if ni >= len(g.nodes) {
 				continue
 			}
-
 			nbrVec := g.getVectorFast(ni)
-			d := euclideanSquared(vec, nbrVec)
+			d := euclideanSquaredFast(vec, nbrVec)
 			if d < dMin {
 				dMin = d
 				cur = g.nodes[ni]
 				improved = true
-				break // Take first improvement for speed
+				break
 			}
 		}
 	}
 	return cur
 }
 
-// searchLayerFast performs optimized layer search.
+// searchLayerFast performs optimized layer search with better termination.
 func (g *Graph) searchLayerFast(query []float64, entry *Node, lvl, ef int) []*candidate {
 	if entry == nil {
 		return nil
 	}
 
-	visited := make(map[int]struct{}, ef*2)
+	visited := g.visitedPool.Get()
+	defer g.visitedPool.Return(visited)
 
 	pqPtr := g.pqPool.Get().(*minHeap)
 	*pqPtr = (*pqPtr)[:0]
@@ -409,14 +561,17 @@ func (g *Graph) searchLayerFast(query []float64, entry *Node, lvl, ef int) []*ca
 	}()
 
 	entryVec := g.getVectorFast(entry.idx)
-	d0 := euclideanSquared(query, entryVec)
+	d0 := euclideanSquaredFast(query, entryVec)
 	heap.Push(pqPtr, &candidate{idx: entry.idx, dist: d0})
 	heap.Push(resPtr, &candidate{idx: entry.idx, dist: d0})
-	visited[entry.idx] = struct{}{}
+	visited.Visit(entry.idx)
+
+	lowerBound := d0
 
 	for pqPtr.Len() > 0 {
 		c := heap.Pop(pqPtr).(*candidate)
-		if resPtr.Len() > 0 && c.dist > (*resPtr)[0].dist {
+
+		if resPtr.Len() >= ef && c.dist > lowerBound {
 			break
 		}
 
@@ -429,21 +584,25 @@ func (g *Graph) searchLayerFast(query []float64, entry *Node, lvl, ef int) []*ca
 			if ni >= len(g.nodes) {
 				continue
 			}
-			if _, ok := visited[ni]; ok {
+			if visited.IsVisited(ni) {
 				continue
 			}
-			visited[ni] = struct{}{}
+			visited.Visit(ni)
 
 			nbrVec := g.getVectorFast(ni)
-			d := euclideanSquared(query, nbrVec)
+			d := euclideanSquaredFast(query, nbrVec)
 
 			if resPtr.Len() < ef {
 				heap.Push(resPtr, &candidate{idx: ni, dist: d})
 				heap.Push(pqPtr, &candidate{idx: ni, dist: d})
+				if d < lowerBound {
+					lowerBound = d
+				}
 			} else if d < (*resPtr)[0].dist {
 				heap.Pop(resPtr)
 				heap.Push(resPtr, &candidate{idx: ni, dist: d})
 				heap.Push(pqPtr, &candidate{idx: ni, dist: d})
+				lowerBound = (*resPtr)[0].dist
 			}
 		}
 	}
@@ -455,29 +614,54 @@ func (g *Graph) searchLayerFast(query []float64, entry *Node, lvl, ef int) []*ca
 	return out
 }
 
-// getVectorFast retrieves vector using pooled slice to avoid allocations.
+// getVectorFast retrieves vector with optimized memory access patterns.
 func (g *Graph) getVectorFast(idx int) []float64 {
-	vec := g.vecPool.Get().([]float64)
-	defer g.vecPool.Put(vec)
+	result := make([]float64, g.dim)
 
 	off := idx * g.dim
 	o := off
 
-	for _, chunk := range g.vectors {
+	for chunkIdx, chunk := range g.vectors {
 		n := chunk.Len()
 		if o < n {
 			d := min(n-o, g.dim)
-			for i := 0; i < d; i++ {
-				vec[i] = chunk.Value(o + i)
+
+			i := 0
+			for i < d-4 {
+				result[i] = chunk.Value(o + i)
+				result[i+1] = chunk.Value(o + i + 1)
+				result[i+2] = chunk.Value(o + i + 2)
+				result[i+3] = chunk.Value(o + i + 3)
+				i += 4
 			}
-			// Return a copy since we're returning the slice to the pool
-			result := make([]float64, g.dim)
-			copy(result, vec[:g.dim])
+			for i < d {
+				result[i] = chunk.Value(o + i)
+				i++
+			}
+
+			if d < g.dim {
+				remaining := g.dim - d
+				o = 0
+				for j := chunkIdx + 1; j < len(g.vectors) && remaining > 0; j++ {
+					nextChunk := g.vectors[j]
+					nextN := nextChunk.Len()
+					nextD := min(nextN, remaining)
+
+					for k := 0; k < nextD; k++ {
+						result[d+k] = nextChunk.Value(k)
+					}
+					remaining -= nextD
+					d += nextD
+					if remaining == 0 {
+						break
+					}
+				}
+			}
 			return result
 		}
 		o -= n
 	}
-	return make([]float64, g.dim)
+	return result
 }
 
 // selectNeighborsFast optimized neighbor selection.
@@ -486,13 +670,10 @@ func selectNeighborsFast(cands []*candidate, m int) []*candidate {
 		return cands
 	}
 
-	// Use partial sort for better performance
 	if m < len(cands)/4 {
-		// For small m, use heap-based selection
 		return selectNeighborsHeap(cands, m)
 	}
 
-	// For larger m, use full sort
 	sort.Slice(cands, func(i, j int) bool { return cands[i].dist < cands[j].dist })
 	return cands[:m]
 }
@@ -503,7 +684,6 @@ func selectNeighborsHeap(cands []*candidate, m int) []*candidate {
 		return cands
 	}
 
-	// Build max heap of size m
 	maxHeap := make(maxHeap, 0, m)
 
 	for _, c := range cands {
@@ -515,7 +695,6 @@ func selectNeighborsHeap(cands []*candidate, m int) []*candidate {
 		}
 	}
 
-	// Extract results
 	result := make([]*candidate, maxHeap.Len())
 	for i := len(result) - 1; i >= 0; i-- {
 		result[i] = heap.Pop(&maxHeap).(*candidate)
@@ -527,7 +706,6 @@ func selectNeighborsHeap(cands []*candidate, m int) []*candidate {
 // euclideanSquared computes squared euclidean distance (faster, same ordering).
 func euclideanSquared(a, b []float64) float64 {
 	var sum float64
-	// Unroll loop for better performance on common dimensions
 	i := 0
 	for i < len(a)-3 {
 		d0 := a[i] - b[i]
@@ -537,6 +715,32 @@ func euclideanSquared(a, b []float64) float64 {
 		sum += d0*d0 + d1*d1 + d2*d2 + d3*d3
 		i += 4
 	}
+	for i < len(a) {
+		d := a[i] - b[i]
+		sum += d * d
+		i++
+	}
+	return sum
+}
+
+// euclideanSquaredFast computes squared euclidean distance with optimizations from hnswlib.
+func euclideanSquaredFast(a, b []float64) float64 {
+	var sum float64
+
+	i := 0
+	for i <= len(a)-8 {
+		d0 := a[i] - b[i]
+		d1 := a[i+1] - b[i+1]
+		d2 := a[i+2] - b[i+2]
+		d3 := a[i+3] - b[i+3]
+		d4 := a[i+4] - b[i+4]
+		d5 := a[i+5] - b[i+5]
+		d6 := a[i+6] - b[i+6]
+		d7 := a[i+7] - b[i+7]
+		sum += d0*d0 + d1*d1 + d2*d2 + d3*d3 + d4*d4 + d5*d5 + d6*d6 + d7*d7
+		i += 8
+	}
+
 	for i < len(a) {
 		d := a[i] - b[i]
 		sum += d * d
@@ -581,6 +785,24 @@ func (h *maxHeap) Pop() any {
 	return x
 }
 
+// GetVector returns the vector at the given internal index.
+func (g *Graph) GetVector(idx int) []float64 {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.getVectorFast(idx)
+}
+
+// GetVectorByID returns the vector for the given external ID.
+func (g *Graph) GetVectorByID(id int) ([]float64, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	idx, ok := g.idToIdx[id]
+	if !ok {
+		return nil, false
+	}
+	return g.getVectorFast(idx), true
+}
+
 // Len returns the number of indexed points.
 func (g *Graph) Len() int {
 	g.mu.RLock()
@@ -602,29 +824,48 @@ func max(a, b int) int {
 	return b
 }
 
-// randomLevel samples a layer.
-func randomLevel() int {
+// randomLevel samples a layer with proper ml parameter.
+func (g *Graph) randomLevel() int {
 	lvl := 0
-	for rand.Float64() < 1.0/math.E {
+	for rand.Float64() < 1.0/math.E && lvl < 16 {
 		lvl++
 	}
 	return lvl
 }
 
-// GetVector returns the vector at the given internal index.
-func (g *Graph) GetVector(idx int) []float64 {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.getVectorFast(idx)
-}
-
-// GetVectorByID returns the vector for the given external ID.
-func (g *Graph) GetVectorByID(id int) ([]float64, bool) {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	idx, ok := g.idToIdx[id]
-	if !ok {
-		return nil, false
+// selectNeighborsHeuristic implements the improved neighbor selection heuristic.
+func (g *Graph) selectNeighborsHeuristic(candidates []*candidate, m int) []*candidate {
+	if len(candidates) <= m {
+		return candidates
 	}
-	return g.getVectorFast(idx), true
+
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].dist < candidates[j].dist })
+
+	if len(candidates) <= m*2 {
+		return candidates[:m]
+	}
+
+	selected := make([]*candidate, 0, m)
+	selected = append(selected, candidates[0])
+
+	for i := 1; i < len(candidates) && len(selected) < m; i++ {
+		cand := candidates[i]
+		shouldAdd := true
+
+		if len(selected) > 0 {
+			closest := selected[0]
+			candVec := g.getVectorFast(cand.idx)
+			closestVec := g.getVectorFast(closest.idx)
+			distToClosest := euclideanSquaredFast(candVec, closestVec)
+			if distToClosest < cand.dist*0.9 {
+				shouldAdd = false
+			}
+		}
+
+		if shouldAdd {
+			selected = append(selected, cand)
+		}
+	}
+
+	return selected
 }
