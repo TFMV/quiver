@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/apache/arrow/go/arrow/array"
-	"github.com/apache/arrow/go/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/TFMV/quiver/index"
 )
@@ -20,7 +20,7 @@ func buildArrowIndex(n, dim int) *index.ArrowHNSWIndex { // arrow-hnsw
 		}
 		b.AppendValues(vals, nil)
 		arr := b.NewArray()
-		idx.Add(arr, fmt.Sprintf("%d", i))
+		idx.Add(arr.(*array.Float32), fmt.Sprintf("%d", i))
 		arr.Release()
 	}
 	return idx
@@ -40,6 +40,6 @@ func BenchmarkArrowHNSWSearch(b *testing.B) { // arrow-hnsw
 	defer query.Release()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		idx.Search(query, 10)
+		idx.Search(query.(*array.Float32), 10)
 	}
 }

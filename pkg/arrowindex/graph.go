@@ -8,8 +8,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/apache/arrow/go/arrow/array"
-	"github.com/apache/arrow/go/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 )
 
 // Node represents a point in the HNSW graph.
