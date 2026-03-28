@@ -5,32 +5,10 @@ go 1.24.4
 require (
 	github.com/apache/arrow-go/v18 v18.5.1
 	github.com/gin-contrib/cors v1.7.5
-	github.com/gin-gonic/gin v1.10.1
-	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/prometheus/client_golang v1.22.0
-	github.com/spf13/cobra v1.10.2
-	github.com/spf13/viper v1.20.1
-	github.com/xitongsys/parquet-go v1.6.2
-	github.com/xitongsys/parquet-go-source v0.0.0-20241021075129-b732d2ac9c9b
-	golang.org/x/time v0.14.0
-)
-
-require (
-	github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40 // indirect
-	github.com/apache/thrift v0.22.0 // indirect
-	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/bytedance/sonic v1.13.3 // indirect
-	github.com/bytedance/sonic/loader v0.2.4 // indirect
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cloudwego/base64x v0.1.5 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.9 // indirect
-	github.com/gin-contrib/sse v1.1.0 // indirect
-	github.com/go-playground/locales v0.14.1 // indirect
-	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.26.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
+	github.com/goccy/go-yaml v1.18.0 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
@@ -47,6 +25,8 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.64.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
+	github.com/quic-go/qpack v0.5.1 // indirect
+	github.com/quic-go/quic-go v0.54.0 // indirect
 	github.com/sagikazarmark/locafero v0.9.0 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spf13/afero v1.14.0 // indirect
@@ -56,6 +36,7 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.0 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
+	go.uber.org/mock v0.5.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/arch v0.18.0 // indirect
 	golang.org/x/crypto v0.47.0 // indirect
