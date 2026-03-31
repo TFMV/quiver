@@ -45,6 +45,9 @@ func (idx *ExactIndex) Insert(id string, vector vectortypes.F32) error {
 	} else if len(vector) != idx.vectorDim {
 		return fmt.Errorf("vector dimension mismatch: expected %d, got %d", idx.vectorDim, len(vector))
 	}
+	if _, exists := idx.vectors[id]; exists {
+		return fmt.Errorf("vector with ID %s already exists", id)
+	}
 
 	// Make a copy of the vector to prevent external modification
 	vectorCopy := make(vectortypes.F32, len(vector))

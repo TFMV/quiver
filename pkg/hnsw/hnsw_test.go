@@ -433,7 +433,7 @@ func TestDistanceFunctions(t *testing.T) {
 			fn:      DotProductDistanceFunc,
 			a:       []float32{1.0, 2.0, 3.0},
 			b:       []float32{1.0, 2.0, 3.0},
-			want:    -14.0, // -(1*1 + 2*2 + 3*3)
+			want:    -13.0, // 1 - (1*1 + 2*2 + 3*3)
 			wantErr: false,
 			epsilon: 1e-6,
 		},

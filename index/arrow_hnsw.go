@@ -46,11 +46,14 @@ func (idx *ArrowHNSWIndex) Add(vec *array.Float32, id string) error { // arrow-h
 	if vec.Len() != idx.dim {
 		return fmt.Errorf("dimension mismatch: got %d want %d", vec.Len(), idx.dim)
 	}
+	if _, exists := idx.idToIdx[id]; exists {
+		return fmt.Errorf("vector with ID %s already exists", id)
+	}
 	vals := make([]float64, idx.dim)
 	for i := 0; i < idx.dim; i++ {
 		vals[i] = float64(vec.Value(i))
 	}
-	internal := len(idx.idToIdx)
+	internal := len(idx.idxToID)
 	idx.idToIdx[id] = internal
 	idx.idxToID[internal] = id
 	return idx.graph.Add(internal, vals)
@@ -58,6 +61,9 @@ func (idx *ArrowHNSWIndex) Add(vec *array.Float32, id string) error { // arrow-h
 
 // Search returns the k nearest results to the query vector.
 func (idx *ArrowHNSWIndex) Search(query *array.Float32, k int) ([]Result, error) { // arrow-hnsw
+	if k <= 0 {
+		return nil, fmt.Errorf("k must be positive")
+	}
 	if query.Len() != idx.dim {
 		return nil, fmt.Errorf("dimension mismatch: got %d want %d", query.Len(), idx.dim)
 	}
@@ -84,11 +90,15 @@ func (idx *ArrowHNSWIndex) Search(query *array.Float32, k int) ([]Result, error)
 
 // Save writes the index to an Arrow IPC file.
 func (idx *ArrowHNSWIndex) Save(path string) error { // arrow-hnsw
-	ids := make([]int32, 0, idx.graph.Len())
+	ids := make([]string, 0, idx.graph.Len())
 	vecBuilder := array.NewFloat32Builder(idx.allocator)
-	for id, internal := range idx.idToIdx {
-		_ = id
-		ids = append(ids, int32(internal))
+	defer vecBuilder.Release()
+	for internal := 0; internal < idx.graph.Len(); internal++ {
+		id, exists := idx.idxToID[internal]
+		if !exists {
+			return fmt.Errorf("missing external ID for internal index %d", internal)
+		}
+		ids = append(ids, id)
 		vec := idx.graph.GetVector(internal)
 		vecBuilder.AppendValues(float32Slice(vec), nil)
 	}
@@ -96,13 +106,13 @@ func (idx *ArrowHNSWIndex) Save(path string) error { // arrow-hnsw
 	defer vecArray.Release()
 
 	schema := arrow.NewSchema([]arrow.Field{
-		{Name: "id", Type: arrow.PrimitiveTypes.Int32},
+		{Name: "id", Type: arrow.BinaryTypes.String},
 		{Name: "vector", Type: arrow.FixedSizeListOf(int32(idx.dim), arrow.PrimitiveTypes.Float32)},
 	}, nil)
 
 	rb := array.NewRecordBuilder(idx.allocator, schema)
 	defer rb.Release()
-	rb.Field(0).(*array.Int32Builder).AppendValues(ids, nil)
+	rb.Field(0).(*array.StringBuilder).AppendValues(ids, nil)
 	listBuilder := rb.Field(1).(*array.FixedSizeListBuilder)
 	fb := listBuilder.ValueBuilder().(*array.Float32Builder)
 	offset := 0
@@ -145,7 +155,7 @@ func (idx *ArrowHNSWIndex) Load(path string) error { // arrow-hnsw
 	if err != nil {
 		return err
 	}
-	ids := rec.Column(0).(*array.Int32)
+	ids := rec.Column(0).(*array.String)
 	list := rec.Column(1).(*array.FixedSizeList)
 	values := list.ListValues().(*array.Float32)
 	offset := 0
@@ -154,8 +164,7 @@ func (idx *ArrowHNSWIndex) Load(path string) error { // arrow-hnsw
 		vb := array.NewFloat32Builder(idx.allocator)
 		vb.AppendValues(vecSlice, nil)
 		arr := vb.NewArray()
-		idStr := fmt.Sprintf("%d", ids.Value(i))
-		if err := idx.Add(arr.(*array.Float32), idStr); err != nil {
+		if err := idx.Add(arr.(*array.Float32), ids.Value(i)); err != nil {
 			arr.Release()
 			vb.Release()
 			return err

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -85,31 +84,20 @@ func NewHybridIndex(config IndexConfig) *HybridIndex {
 
 // Insert adds a vector to the index
 func (idx *HybridIndex) Insert(id string, vector vectortypes.F32) error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if idx.vectorDim == 0 {
-		idx.vectorDim = len(vector)
-	} else if len(vector) != idx.vectorDim {
+	idx.mu.RLock()
+	if idx.vectorDim != 0 && len(vector) != idx.vectorDim {
+		idx.mu.RUnlock()
 		return fmt.Errorf("vector dimension mismatch: expected %d, got %d", idx.vectorDim, len(vector))
 	}
+	if _, exists := idx.vectors[id]; exists {
+		idx.mu.RUnlock()
+		return fmt.Errorf("vector with ID %s already exists", id)
+	}
+	idx.mu.RUnlock()
 
 	// Make a copy of the vector to prevent external modification
 	vectorCopy := make(vectortypes.F32, len(vector))
 	copy(vectorCopy, vector)
-
-	// Store the vector in our map
-	idx.vectors[id] = vectorCopy
-
-	// Track dimensions for statistics
-	idx.dimensions = append(idx.dimensions, len(vector))
-
-	// Update statistics
-	idx.stats.VectorCount++
-	idx.stats.AvgDimension = calculateAvgDimension(idx.dimensions)
-
-	// Update adaptive selector thresholds
-	idx.selector.UpdateThresholds(idx.stats.VectorCount, idx.stats.AvgDimension)
 
 	// Add to all component indexes
 	if err := idx.exactIndex.Insert(id, vectorCopy); err != nil {
@@ -125,29 +113,48 @@ func (idx *HybridIndex) Insert(id string, vector vectortypes.F32) error {
 		return err
 	}
 
+	// Persist local bookkeeping only after both component indexes succeed.
+	idx.mu.Lock()
+	if idx.vectorDim == 0 {
+		idx.vectorDim = len(vector)
+	}
+	idx.vectors[id] = vectorCopy
+	idx.dimensions = append(idx.dimensions, len(vector))
+	idx.stats.VectorCount++
+	idx.stats.AvgDimension = calculateAvgDimension(idx.dimensions)
+	idx.selector.UpdateThresholds(idx.stats.VectorCount, idx.stats.AvgDimension)
+	idx.mu.Unlock()
+
 	return nil
 }
 
 // InsertBatch adds multiple vectors to the index in a single operation
 func (idx *HybridIndex) InsertBatch(vectors map[string]vectortypes.F32) error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
 	if len(vectors) == 0 {
 		return nil
 	}
 
-	if idx.vectorDim == 0 {
+	idx.mu.RLock()
+	verifyDim := idx.vectorDim
+	if verifyDim == 0 {
 		for _, v := range vectors {
-			idx.vectorDim = len(v)
+			verifyDim = len(v)
 			break
 		}
 	}
 	for _, v := range vectors {
-		if len(v) != idx.vectorDim {
-			return fmt.Errorf("vector dimension mismatch: expected %d, got %d", idx.vectorDim, len(v))
+		if len(v) != verifyDim {
+			idx.mu.RUnlock()
+			return fmt.Errorf("vector dimension mismatch: expected %d, got %d", verifyDim, len(v))
 		}
 	}
+	for id := range vectors {
+		if _, exists := idx.vectors[id]; exists {
+			idx.mu.RUnlock()
+			return fmt.Errorf("vector with ID %s already exists", id)
+		}
+	}
+	idx.mu.RUnlock()
 
 	// Make copies and collect dimensions
 	vectorsCopy := make(map[string]vectortypes.F32, len(vectors))
@@ -209,6 +216,13 @@ func (idx *HybridIndex) InsertBatch(vectors map[string]vectortypes.F32) error {
 	}
 
 	// If all successful, update our internal vectors map
+	idx.mu.Lock()
+	if idx.vectorDim == 0 {
+		for _, v := range vectorsCopy {
+			idx.vectorDim = len(v)
+			break
+		}
+	}
 	for id, vector := range vectorsCopy {
 		idx.vectors[id] = vector
 	}
@@ -222,19 +236,19 @@ func (idx *HybridIndex) InsertBatch(vectors map[string]vectortypes.F32) error {
 
 	// Update adaptive selector thresholds
 	idx.selector.UpdateThresholds(idx.stats.VectorCount, idx.stats.AvgDimension)
+	idx.mu.Unlock()
 
 	return nil
 }
 
 // Delete removes a vector from the index
 func (idx *HybridIndex) Delete(id string) error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	// Check if the vector exists
+	idx.mu.RLock()
 	if _, exists := idx.vectors[id]; !exists {
+		idx.mu.RUnlock()
 		return fmt.Errorf("vector with ID %s not found", id)
 	}
+	idx.mu.RUnlock()
 
 	// Remove from all component indexes
 	if err := idx.exactIndex.Delete(id); err != nil {
@@ -245,7 +259,8 @@ func (idx *HybridIndex) Delete(id string) error {
 		return err
 	}
 
-	// Remove from our map
+	// Remove from our map locked
+	idx.mu.Lock()
 	delete(idx.vectors, id)
 
 	// Update statistics
@@ -269,19 +284,18 @@ func (idx *HybridIndex) Delete(id string) error {
 	}
 
 	idx.selector.UpdateThresholds(idx.stats.VectorCount, idx.stats.AvgDimension)
+	idx.mu.Unlock()
 
 	return nil
 }
 
 // DeleteBatch removes multiple vectors from the index in a single operation
 func (idx *HybridIndex) DeleteBatch(ids []string) error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
 	if len(ids) == 0 {
 		return nil
 	}
 
+	idx.mu.RLock()
 	// Verify all vectors exist first
 	nonExistingIDs := make([]string, 0)
 	for _, id := range ids {
@@ -289,6 +303,7 @@ func (idx *HybridIndex) DeleteBatch(ids []string) error {
 			nonExistingIDs = append(nonExistingIDs, id)
 		}
 	}
+	idx.mu.RUnlock()
 
 	if len(nonExistingIDs) > 0 {
 		return fmt.Errorf("some vectors not found: %v", nonExistingIDs)
@@ -318,6 +333,7 @@ func (idx *HybridIndex) DeleteBatch(ids []string) error {
 	}
 
 	// Delete from internal map
+	idx.mu.Lock()
 	for _, id := range ids {
 		delete(idx.vectors, id)
 	}
@@ -344,6 +360,7 @@ func (idx *HybridIndex) DeleteBatch(ids []string) error {
 	}
 
 	if errorsOccurred {
+		idx.mu.Unlock()
 		return fmt.Errorf("errors during batch delete: %v", errorMsgs)
 	}
 
@@ -352,6 +369,7 @@ func (idx *HybridIndex) DeleteBatch(ids []string) error {
 	}
 
 	idx.selector.UpdateThresholds(idx.stats.VectorCount, idx.stats.AvgDimension)
+	idx.mu.Unlock()
 
 	return nil
 }
@@ -363,16 +381,19 @@ func (idx *HybridIndex) Search(query vectortypes.F32, k int) ([]types.BasicSearc
 
 // SearchWithRequest performs a search using the provided request parameters
 func (idx *HybridIndex) SearchWithRequest(req HybridSearchRequest) (HybridSearchResponse, error) {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
 	startTime := time.Now()
 
-	if idx.vectorDim > 0 && len(req.Query) != idx.vectorDim {
-		return HybridSearchResponse{}, fmt.Errorf("query dimension mismatch: expected %d, got %d", idx.vectorDim, len(req.Query))
+	idx.mu.RLock()
+	vDim := idx.vectorDim
+	vCount := idx.stats.VectorCount
+	avgDim := idx.stats.AvgDimension
+	idx.mu.RUnlock()
+
+	if vDim > 0 && len(req.Query) != vDim {
+		return HybridSearchResponse{}, fmt.Errorf("query dimension mismatch: expected %d, got %d", vDim, len(req.Query))
 	}
-	if len(req.NegativeExample) > 0 && idx.vectorDim > 0 && len(req.NegativeExample) != idx.vectorDim {
-		return HybridSearchResponse{}, fmt.Errorf("negative example dimension mismatch: expected %d, got %d", idx.vectorDim, len(req.NegativeExample))
+	if len(req.NegativeExample) > 0 && vDim > 0 && len(req.NegativeExample) != vDim {
+		return HybridSearchResponse{}, fmt.Errorf("negative example dimension mismatch: expected %d, got %d", vDim, len(req.NegativeExample))
 	}
 
 	// Ensure valid K
@@ -386,7 +407,7 @@ func (idx *HybridIndex) SearchWithRequest(req HybridSearchRequest) (HybridSearch
 		strategy = req.ForceStrategy
 	} else {
 		// Use vector count and dimension from the index stats
-		strategy = idx.selector.SelectStrategy(idx.stats.VectorCount, idx.stats.AvgDimension, req.K)
+		strategy = idx.selector.SelectStrategy(vCount, avgDim, req.K)
 	}
 
 	// Execute search with selected strategy, including negative example if provided
@@ -422,6 +443,7 @@ func (idx *HybridIndex) SearchWithRequest(req HybridSearchRequest) (HybridSearch
 	idx.selector.RecordQueryMetrics(metrics)
 
 	// Update strategy stats
+	idx.mu.Lock()
 	if strategyStats, ok := idx.stats.StrategyStats[strategy]; ok {
 		strategyStats.UsageCount++
 		strategyStats.TotalDuration += duration
@@ -429,6 +451,7 @@ func (idx *HybridIndex) SearchWithRequest(req HybridSearchRequest) (HybridSearch
 			strategyStats.AvgDuration = strategyStats.TotalDuration / time.Duration(strategyStats.UsageCount)
 		}
 	}
+	idx.mu.Unlock()
 
 	// Build response
 	response := HybridSearchResponse{
@@ -445,33 +468,23 @@ func (idx *HybridIndex) SearchWithRequest(req HybridSearchRequest) (HybridSearch
 	return response, nil
 }
 
-// Helper function to get the name of a function (used for distance function comparison)
-func getFunctionName(i interface{}) string {
-	return fmt.Sprintf("%v", i)
-}
-
-// helper function
-func min(a, b float32) float32 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // searchWithStrategy performs a search using the specified strategy
 // If negativeExample is not empty and negativeWeight > 0, it will influence the search
 func (idx *HybridIndex) searchWithStrategy(query vectortypes.F32, k int, strategy IndexType, negativeExample ...vectortypes.F32) ([]types.BasicSearchResult, error) {
 	idx.mu.RLock()
-	defer idx.mu.RUnlock()
+	vDim := idx.vectorDim
+	vCount := idx.stats.VectorCount
+	avgDim := idx.stats.AvgDimension
+	idx.mu.RUnlock()
 
-	if idx.vectorDim > 0 && len(query) != idx.vectorDim {
-		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", idx.vectorDim, len(query))
+	if vDim > 0 && len(query) != vDim {
+		return nil, fmt.Errorf("query dimension mismatch: expected %d, got %d", vDim, len(query))
 	}
 
 	// If no specific strategy is provided, select one
 	if strategy == "" {
 		// Pass proper parameters to SelectStrategy: vectorCount, dimension, k
-		strategy = idx.selector.SelectStrategy(idx.stats.VectorCount, idx.stats.AvgDimension, k)
+		strategy = idx.selector.SelectStrategy(vCount, avgDim, k)
 	}
 
 	// Check if we have a negative example
@@ -500,57 +513,60 @@ func (idx *HybridIndex) searchWithStrategy(query vectortypes.F32, k int, strateg
 
 	switch strategy {
 	case ExactIndexType:
-		// For exact search, we'll do a standard search and then re-rank using negative examples
-		results, err = idx.exactIndex.Search(query, k)
+		retrieveK := k
+		if hasNegative {
+			retrieveK = maxInt(2*k, 30)
+			if retrieveK > len(idx.vectors) {
+				retrieveK = len(idx.vectors)
+			}
+		}
+
+		results, err = idx.exactIndex.Search(query, retrieveK)
 		if err != nil {
 			return nil, err
 		}
 
 		if hasNegative {
-			// Re-rank exact search results using negative example
-			// This is done by explicitly calculating distances
-			for i, result := range results {
+			type rerankResult struct {
+				types.BasicSearchResult
+				negDistance float32
+			}
+
+			reranked := make([]rerankResult, 0, len(results))
+			for _, result := range results {
 				vector, exists := idx.vectors[result.ID]
 				if !exists {
 					continue
 				}
 
-				// Calculate distance to negative example
-				negDist := idx.distFunc(vector, negExample)
-
-				// For our distance function, lower is closer (more similar)
-				// We want to boost items that are LESS similar to the negative example
-				// So we combine the distances:
-				// - Keep the original distance as the main part
-				// - Subtract a factor for the negative example (inverted, since higher values are better)
-
-				// Get distance function signature
-				distFuncName := getFunctionName(idx.distFunc)
-
-				// Normalize negative distance based on distance function
-				var normNegDist float32
-				if strings.Contains(distFuncName, "Cosine") {
-					// For cosine, range is 0-2, where 0 is identical, 2 is opposite
-					// Normalize to [0,1] and invert
-					normNegDist = 1.0 - (negDist / 2.0)
-				} else {
-					// For Euclidean, normalize using a heuristic max value (sqrt(2) for normalized vectors)
-					normNegDist = min(negDist/1.414, 1.0)
-				}
-
-				// Combine distances
-				combinedDist := (result.Distance * (1 - negWeight)) - ((1 - normNegDist) * negWeight)
-				if combinedDist < 0 {
-					combinedDist = 0
-				}
-
-				results[i].Distance = combinedDist
+				reranked = append(reranked, rerankResult{
+					BasicSearchResult: result,
+					negDistance:       idx.distFunc(vector, negExample),
+				})
 			}
 
-			// Re-sort by adjusted distance
-			sort.Slice(results, func(i, j int) bool {
-				return results[i].Distance < results[j].Distance
-			})
+			if len(reranked) > 0 {
+				for i := range reranked {
+					// We prioritize smaller distance to query, and larger distance to negative example.
+					// Stable formula avoiding empirical min/max scaling.
+					reranked[i].Distance = reranked[i].Distance - (negWeight * reranked[i].negDistance)
+				}
+
+				sort.SliceStable(reranked, func(i, j int) bool {
+					if reranked[i].Distance == reranked[j].Distance {
+						return reranked[i].ID < reranked[j].ID
+					}
+					return reranked[i].Distance < reranked[j].Distance
+				})
+
+				results = results[:0]
+				for _, result := range reranked {
+					results = append(results, result.BasicSearchResult)
+				}
+			}
+			if len(results) > k {
+				results = results[:k]
+			}
 		}
 
 	case HNSWIndexType:
@@ -613,6 +629,20 @@ func calculateAvgDimension(dimensions []int) int {
 	}
 
 	return sum / len(dimensions)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func normalizeDistance(value, minValue, maxValue float32) float32 {
+	if maxValue <= minValue {
+		return 0
+	}
+	return (value - minValue) / (maxValue - minValue)
 }
 
 // BatchSearchRequest holds parameters for multiple search requests

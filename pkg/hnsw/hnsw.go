@@ -1,10 +1,10 @@
 package hnsw
 
 import (
-	"container/heap"
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -97,21 +97,50 @@ type Result struct {
 // ResultSet is a priority queue of search results
 type ResultSet []Result
 
-// Implement the heap.Interface
-func (rs ResultSet) Len() int           { return len(rs) }
-func (rs ResultSet) Less(i, j int) bool { return rs[i].Distance < rs[j].Distance }
-func (rs ResultSet) Swap(i, j int)      { rs[i], rs[j] = rs[j], rs[i] }
-
-func (rs *ResultSet) Push(x interface{}) {
-	*rs = append(*rs, x.(Result))
+// Type-safe min-heap operations for ResultSet (avoids interface{} allocations)
+func (rs *ResultSet) push(x Result) {
+	*rs = append(*rs, x)
+	rs.up(len(*rs) - 1)
 }
 
-func (rs *ResultSet) Pop() interface{} {
+func (rs *ResultSet) pop() Result {
 	old := *rs
-	n := len(old)
-	item := old[n-1]
-	*rs = old[0 : n-1]
+	n := len(old) - 1
+	old[0], old[n] = old[n], old[0]
+	old.down(0, n)
+	item := old[n]
+	*rs = old[:n]
 	return item
+}
+
+func (rs ResultSet) up(j int) {
+	for {
+		i := (j - 1) / 2 // parent
+		if i == j || rs[j].Distance >= rs[i].Distance {
+			break
+		}
+		rs[i], rs[j] = rs[j], rs[i]
+		j = i
+	}
+}
+
+func (rs ResultSet) down(i0, n int) {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n || j1 < 0 { // j1 < 0 after int overflow
+			break
+		}
+		j := j1 // left child
+		if j2 := j1 + 1; j2 < n && rs[j2].Distance < rs[j1].Distance {
+			j = j2 // right child
+		}
+		if rs[i].Distance <= rs[j].Distance {
+			break
+		}
+		rs[i], rs[j] = rs[j], rs[i]
+		i = j
+	}
 }
 
 // maxResultSet is a max-heap used to keep track of the top results by distance
@@ -119,19 +148,71 @@ func (rs *ResultSet) Pop() interface{} {
 type maxResultSet []Result
 
 func (rs maxResultSet) Len() int           { return len(rs) }
-func (rs maxResultSet) Less(i, j int) bool { return rs[i].Distance > rs[j].Distance }
-func (rs maxResultSet) Swap(i, j int)      { rs[i], rs[j] = rs[j], rs[i] }
 
-func (rs *maxResultSet) Push(x interface{}) {
-	*rs = append(*rs, x.(Result))
+// Type-safe max-heap operations for maxResultSet
+func (rs *maxResultSet) push(x Result) {
+	*rs = append(*rs, x)
+	rs.up(len(*rs) - 1)
 }
 
-func (rs *maxResultSet) Pop() interface{} {
+func (rs *maxResultSet) pop() Result {
 	old := *rs
-	n := len(old)
-	item := old[n-1]
-	*rs = old[:n-1]
+	n := len(old) - 1
+	old[0], old[n] = old[n], old[0]
+	old.down(0, n)
+	item := old[n]
+	*rs = old[:n]
 	return item
+}
+
+func (rs maxResultSet) up(j int) {
+	for {
+		i := (j - 1) / 2 // parent
+		if i == j || rs[j].Distance <= rs[i].Distance {
+			break
+		}
+		rs[i], rs[j] = rs[j], rs[i]
+		j = i
+	}
+}
+
+func (rs maxResultSet) down(i0, n int) {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n || j1 < 0 { // j1 < 0 after int overflow
+			break
+		}
+		j := j1 // left child
+		if j2 := j1 + 1; j2 < n && rs[j2].Distance > rs[j1].Distance {
+			j = j2 // right child
+		}
+		if rs[i].Distance >= rs[j].Distance {
+			break
+		}
+		rs[i], rs[j] = rs[j], rs[i]
+		i = j
+	}
+}
+
+var visitedPool = sync.Pool{
+	New: func() any {
+		return make(map[uint32]bool)
+	},
+}
+
+var resultSetPool = sync.Pool{
+	New: func() any {
+		rs := make(ResultSet, 0, DefaultEfSearch)
+		return &rs
+	},
+}
+
+var maxResultSetPool = sync.Pool{
+	New: func() any {
+		rs := make(maxResultSet, 0, DefaultEfSearch)
+		return &rs
+	},
 }
 
 // NewHNSW creates a new HNSW index with the given config
@@ -184,18 +265,15 @@ func (h *HNSW) computeDistance(a, b []float32) (float32, error) {
 // Insert adds a new vector to the index
 func (h *HNSW) Insert(id string, vector []float32) error {
 	h.Lock()
-	defer h.Unlock()
-
 	// Check if the vector already exists
 	if _, exists := h.NodesByID[id]; exists {
+		h.Unlock()
 		return fmt.Errorf("vector with ID %s already exists", id)
 	}
 
 	// Generate random level for this node
 	level := h.randomLevel()
-	if level > h.CurrentLevel {
-		h.CurrentLevel = level
-	}
+	oldCurrentLevel := h.CurrentLevel
 
 	// Create a new node
 	newNodeIdx := uint32(len(h.Nodes))
@@ -227,15 +305,39 @@ func (h *HNSW) Insert(id string, vector []float32) error {
 	// If this is the first node, make it the entry point and return
 	if len(h.Nodes) == 1 {
 		h.EntryPoint = 0
+		h.CurrentLevel = level
+		h.Unlock()
 		return nil
 	}
+	h.Unlock()
 
-	// Connect the new node to the graph
-	return h.connectNode(newNodeIdx, vector, level)
+	// Connect the new node to the graph concurrently
+	if err := h.connectNode(newNodeIdx, vector, level, oldCurrentLevel); err != nil {
+		h.Lock()
+		h.Nodes[newNodeIdx] = nil // Safe rollback preserving slice indices
+		delete(h.NodesByID, id)
+		atomic.AddUint32(&h.size, ^uint32(0))
+		h.Unlock()
+		return err
+	}
+
+	if level > oldCurrentLevel {
+		h.Lock()
+		if level > h.CurrentLevel {
+			h.EntryPoint = newNodeIdx
+			h.CurrentLevel = level
+		}
+		h.Unlock()
+	}
+
+	return nil
 }
 
 // connectNode connects a new node to the existing HNSW graph
-func (h *HNSW) connectNode(nodeIdx uint32, vector []float32, level int) error {
+func (h *HNSW) connectNode(nodeIdx uint32, vector []float32, level int, graphLevel int) error {
+	h.RLock()
+	defer h.RUnlock()
+
 	// Make sure level is within bounds
 	if level >= h.MaxLevel {
 		level = h.MaxLevel - 1
@@ -262,7 +364,7 @@ func (h *HNSW) connectNode(nodeIdx uint32, vector []float32, level int) error {
 	}
 
 	// Search for nearest neighbors on each level
-	for lc := h.CurrentLevel; lc > level; lc-- {
+	for lc := graphLevel; lc > level; lc-- {
 		// Skip if current layer is beyond this node's level
 		if lc >= len(h.Nodes[entryPoint].Connections) {
 			continue
@@ -278,7 +380,7 @@ func (h *HNSW) connectNode(nodeIdx uint32, vector []float32, level int) error {
 	}
 
 	// For each level from top to bottom
-	for lc := min(level, h.CurrentLevel); lc >= 0; lc-- {
+	for lc := min(level, graphLevel); lc >= 0; lc-- {
 		// Find the ef nearest neighbors in the current layer
 		neighbors, err := h.searchLayer(vector, h.Nodes[entryPoint].Vector, entryPoint, h.EfConstruction, lc)
 		if err != nil {
@@ -290,21 +392,17 @@ func (h *HNSW) connectNode(nodeIdx uint32, vector []float32, level int) error {
 			continue
 		}
 
-		// Get the M nearest neighbors
-		selectedNeighbors := h.selectNeighbors(neighbors, min(h.M, len(neighbors)))
+		maxConnections := h.M
+		if lc == 0 {
+			maxConnections = h.MaxM0
+		}
+
+		// Get the nearest neighbors permitted at this layer.
+		selectedNeighbors := h.selectNeighbors(neighbors, min(maxConnections, len(neighbors)))
 
 		// Connect the new node to its neighbors
 		newNode := h.Nodes[nodeIdx]
 		newNode.Lock()
-
-		// Ensure connections slice is large enough
-		for len(newNode.Connections) <= lc {
-			maxConns := h.M
-			if len(newNode.Connections) == 0 {
-				maxConns = h.MaxM0
-			}
-			newNode.Connections = append(newNode.Connections, make([]uint32, 0, maxConns))
-		}
 
 		for _, neighbor := range selectedNeighbors {
 			newNode.Connections[lc] = append(newNode.Connections[lc], neighbor.VectorIndex)
@@ -319,22 +417,10 @@ func (h *HNSW) connectNode(nodeIdx uint32, vector []float32, level int) error {
 			}
 
 			neighborNode := h.Nodes[neighbor.VectorIndex]
+			if lc > neighborNode.Level || lc >= len(neighborNode.Connections) {
+				continue
+			}
 			neighborNode.Lock()
-
-			// Ensure neighbor connections slice is large enough
-			for len(neighborNode.Connections) <= lc {
-				maxConns := h.M
-				if len(neighborNode.Connections) == 0 {
-					maxConns = h.MaxM0
-				}
-				neighborNode.Connections = append(neighborNode.Connections, make([]uint32, 0, maxConns))
-			}
-
-			// Check if we need to add the new node as a connection
-			maxConnections := h.M
-			if lc == 0 {
-				maxConnections = h.MaxM0
-			}
 
 			// Add connection to the new node
 			neighborNode.Connections[lc] = append(neighborNode.Connections[lc], nodeIdx)
@@ -378,12 +464,6 @@ func (h *HNSW) connectNode(nodeIdx uint32, vector []float32, level int) error {
 		}
 	}
 
-	// Update the entry point if the new node has a higher level
-	if level > h.CurrentLevel {
-		h.EntryPoint = nodeIdx
-		h.CurrentLevel = level
-	}
-
 	return nil
 }
 
@@ -400,8 +480,12 @@ func (h *HNSW) searchLayer(queryVector, entryVector []float32, entryPointID uint
 	}
 
 	// Initialize visited set
-	visited := make(map[uint32]bool)
+	visited := visitedPool.Get().(map[uint32]bool)
+	for k := range visited {
+		delete(visited, k)
+	}
 	visited[entryPointID] = true
+	defer visitedPool.Put(visited)
 
 	// Initialize distance from query to entry point
 	distance, err := h.computeDistance(queryVector, entryVector)
@@ -410,19 +494,23 @@ func (h *HNSW) searchLayer(queryVector, entryVector []float32, entryPointID uint
 	}
 
 	// Initialize candidate set and result set
-	candidates := &ResultSet{Result{VectorIndex: entryPointID, Distance: distance}}
-	heap.Init(candidates)
+	candidates := resultSetPool.Get().(*ResultSet)
+	*candidates = (*candidates)[:0]
+	candidates.push(Result{VectorIndex: entryPointID, Distance: distance})
+	defer resultSetPool.Put(candidates)
 
-	results := &maxResultSet{Result{VectorIndex: entryPointID, Distance: distance}}
-	heap.Init(results)
+	results := maxResultSetPool.Get().(*maxResultSet)
+	*results = (*results)[:0]
+	results.push(Result{VectorIndex: entryPointID, Distance: distance})
+	defer maxResultSetPool.Put(results)
 
 	// Continue search while candidates exist
-	for candidates.Len() > 0 {
+	for len(*candidates) > 0 {
 		// Get the closest candidate
-		current := heap.Pop(candidates).(Result)
+		current := candidates.pop()
 
 		// If the candidate is farther than the farthest in results, we can stop
-		if results.Len() >= ef && current.Distance > (*results)[0].Distance {
+		if len(*results) >= ef && current.Distance > (*results)[0].Distance {
 			break
 		}
 
@@ -462,13 +550,13 @@ func (h *HNSW) searchLayer(queryVector, entryVector []float32, entryPointID uint
 				}
 
 				// If results not full or connection closer than furthest in results
-				if results.Len() < ef || connDist < (*results)[0].Distance {
-					heap.Push(candidates, Result{VectorIndex: connID, Distance: connDist})
-					heap.Push(results, Result{VectorIndex: connID, Distance: connDist})
+				if len(*results) < ef || connDist < (*results)[0].Distance {
+					candidates.push(Result{VectorIndex: connID, Distance: connDist})
+					results.push(Result{VectorIndex: connID, Distance: connDist})
 
 					// If results exceed ef, remove the furthest
-					if results.Len() > ef {
-						heap.Pop(results)
+					if len(*results) > ef {
+						results.pop()
 					}
 				}
 			}
@@ -476,9 +564,9 @@ func (h *HNSW) searchLayer(queryVector, entryVector []float32, entryPointID uint
 	}
 
 	// Convert results to slice for returning
-	resultSlice := make([]Result, results.Len())
-	for i := results.Len() - 1; i >= 0; i-- {
-		r := heap.Pop(results).(Result)
+	resultSlice := make([]Result, len(*results))
+	for i := len(*results) - 1; i >= 0; i-- {
+		r := results.pop()
 
 		// Safety check before accessing VectorID
 		if int(r.VectorIndex) < len(h.Nodes) && h.Nodes[r.VectorIndex] != nil {
@@ -493,31 +581,20 @@ func (h *HNSW) searchLayer(queryVector, entryVector []float32, entryPointID uint
 
 // selectNeighbors selects the k nearest neighbors from the candidates
 func (h *HNSW) selectNeighbors(candidates []Result, k int) []Result {
-	if len(candidates) <= k {
-		return candidates
+	if k <= 0 || len(candidates) == 0 {
+		return nil
 	}
-
-	// Use simple heuristic: just return k closest
-	results := make([]Result, k)
-	pq := &ResultSet{}
-	heap.Init(pq)
-
-	// Add all candidates to a min heap
-	for _, c := range candidates {
-		heap.Push(pq, c)
-		if pq.Len() > k {
-			heap.Pop(pq)
+	results := make([]Result, len(candidates))
+	copy(results, candidates)
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Distance == results[j].Distance {
+			return results[i].VectorIndex < results[j].VectorIndex
 		}
+		return results[i].Distance < results[j].Distance
+	})
+	if len(results) > k {
+		results = results[:k]
 	}
-
-	// Extract the k nearest neighbors
-	for i := k - 1; i >= 0; i-- {
-		if pq.Len() == 0 {
-			break
-		}
-		results[i] = heap.Pop(pq).(Result)
-	}
-
 	return results
 }
 
@@ -594,6 +671,44 @@ func (h *HNSW) Search(queryVector []float32, k int) ([]Result, error) {
 		results = results[:k]
 	}
 
+	// Deletions can disconnect parts of the graph. When graph search under-fills,
+	// supplement it with an exact pass so callers still receive complete results.
+	if len(results) < k {
+		existing := make(map[uint32]struct{}, len(results))
+		for _, result := range results {
+			existing[result.VectorIndex] = struct{}{}
+		}
+
+		for idx, node := range h.Nodes {
+			if node == nil {
+				continue
+			}
+			if _, ok := existing[uint32(idx)]; ok {
+				continue
+			}
+
+			dist, err := h.computeDistance(queryVector, node.Vector)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, Result{
+				VectorID:    node.VectorID,
+				Distance:    dist,
+				VectorIndex: uint32(idx),
+			})
+		}
+
+		sort.Slice(results, func(i, j int) bool {
+			if results[i].Distance == results[j].Distance {
+				return results[i].VectorID < results[j].VectorID
+			}
+			return results[i].Distance < results[j].Distance
+		})
+		if len(results) > k {
+			results = results[:k]
+		}
+	}
+
 	return results, nil
 }
 
@@ -625,23 +740,24 @@ func (h *HNSW) randomLevel() int {
 // Delete removes a vector from the index
 func (h *HNSW) Delete(id string) error {
 	h.Lock()
-	defer h.Unlock()
-
 	// Check if the vector exists
 	idx, exists := h.NodesByID[id]
 	if !exists {
+		h.Unlock()
 		return fmt.Errorf("vector with ID %s not found", id)
 	}
 
 	// Safety check for node access
 	if int(idx) >= len(h.Nodes) || h.Nodes[idx] == nil {
+		h.Unlock()
 		return fmt.Errorf("vector index %d is invalid", idx)
 	}
 
-	// Get the node to be deleted
 	nodeToDelete := h.Nodes[idx]
+	h.Unlock()
 
-	// For each level and each connection, remove the reference to this node
+	// For each level and each connection, remove the reference to this node concurrently
+	h.RLock()
 	for level := 0; level <= nodeToDelete.Level; level++ {
 		// Safety check for connections at this level
 		if level >= len(nodeToDelete.Connections) {
@@ -659,7 +775,7 @@ func (h *HNSW) Delete(id string) error {
 
 			// Safety check for connection's connections at this level
 			if level < len(connNode.Connections) {
-				// Remove the connection to the deleted node
+				// Remove the connection to the deleted node via array copy preventing iteration races
 				newConns := make([]uint32, 0, len(connNode.Connections[level]))
 				for _, c := range connNode.Connections[level] {
 					if c != idx {
@@ -672,6 +788,10 @@ func (h *HNSW) Delete(id string) error {
 			connNode.Unlock()
 		}
 	}
+	h.RUnlock()
+
+	h.Lock()
+	defer h.Unlock()
 
 	// If the node being deleted is the entry point, we need to update it
 	if h.EntryPoint == idx {

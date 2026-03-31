@@ -114,6 +114,7 @@ type Node struct {
 	idx       int
 	level     int
 	neighbors [][]int
+	mu        sync.RWMutex
 }
 
 // NewNode creates a new node with properly initialized neighbor slices.
@@ -204,7 +205,6 @@ func (g *Graph) AddBatch(items []struct {
 	}
 
 	g.mu.Lock()
-	defer g.mu.Unlock()
 
 	for _, item := range items {
 		if len(item.Vec) != g.dim {
@@ -215,11 +215,10 @@ func (g *Graph) AddBatch(items []struct {
 	for _, item := range items {
 		g.builder.AppendValues(item.Vec, nil)
 		if g.builder.Len()/g.dim >= g.chunkSize {
-			chunk := g.builder.NewArray().(*array.Float64)
-			g.vectors = append(g.vectors, chunk)
-			g.builder = array.NewFloat64Builder(g.allocator)
+			g.flushBuilderLocked()
 		}
 	}
+	g.flushBuilderLocked()
 
 	nodes := make([]*Node, len(items))
 	startPos := len(g.nodes)
@@ -228,30 +227,43 @@ func (g *Graph) AddBatch(items []struct {
 		pos := startPos + i
 		g.idToIdx[item.ID] = pos
 		nodes[i] = NewNode(item.ID, pos, g.levelFunc())
-		if nodes[i].level > g.maxLevel {
-			g.maxLevel = nodes[i].level
-			g.enterPoint = nodes[i]
-		}
 	}
 
 	g.nodes = append(g.nodes, nodes...)
+	g.mu.Unlock()
 
 	for i, item := range items {
 		n := nodes[i]
 		pos := startPos + i
 
+		g.mu.RLock()
 		if pos == 0 {
+			g.mu.RUnlock()
+			g.mu.Lock()
 			g.enterPoint = n
 			g.maxLevel = n.level
+			g.mu.Unlock()
 			continue
 		}
 
 		if g.enterPoint == nil {
+			g.mu.RUnlock()
+			g.mu.Lock()
 			g.enterPoint = g.nodes[0]
 			g.maxLevel = g.enterPoint.level
+			g.mu.Unlock()
+			g.mu.RLock()
 		}
+		g.mu.RUnlock()
 
 		g.connectNodeToGraph(n, item.Vec)
+
+		g.mu.Lock()
+		if n.level > g.maxLevel {
+			g.maxLevel = n.level
+			g.enterPoint = n
+		}
+		g.mu.Unlock()
 	}
 
 	return nil
@@ -259,6 +271,9 @@ func (g *Graph) AddBatch(items []struct {
 
 // connectNodeToGraph connects a node to the existing graph structure with enhanced hnswlib-style algorithm.
 func (g *Graph) connectNodeToGraph(n *Node, vec []float64) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
 	cur := g.enterPoint
 	curDist := euclideanSquaredFast(vec, g.getVectorFast(cur.idx))
 
@@ -266,10 +281,15 @@ func (g *Graph) connectNodeToGraph(n *Node, vec []float64) {
 		changed := true
 		for changed {
 			changed = false
+			cur.mu.RLock()
 			if lvl >= len(cur.neighbors) {
+				cur.mu.RUnlock()
 				break
 			}
-			for _, ni := range cur.neighbors[lvl] {
+			neighbors := cur.neighbors[lvl]
+			cur.mu.RUnlock()
+
+			for _, ni := range neighbors {
 				if ni >= len(g.nodes) {
 					continue
 				}
@@ -313,11 +333,13 @@ func (g *Graph) connectNodeToGraph(n *Node, vec []float64) {
 func (g *Graph) mutuallyConnectNewElement(newNode *Node, candidates []*candidate, level, mMax int) []*candidate {
 	selected := g.selectNeighborsHeuristic(candidates, g.m)
 
+	newNode.mu.Lock()
 	if level < len(newNode.neighbors) {
 		for _, c := range selected {
 			newNode.neighbors[level] = append(newNode.neighbors[level], c.idx)
 		}
 	}
+	newNode.mu.Unlock()
 
 	for _, c := range selected {
 		ni := c.idx
@@ -326,12 +348,14 @@ func (g *Graph) mutuallyConnectNewElement(newNode *Node, candidates []*candidate
 		}
 		peer := g.nodes[ni]
 
+		peer.mu.Lock()
 		if level < len(peer.neighbors) {
 			peer.neighbors[level] = append(peer.neighbors[level], newNode.idx)
 			if len(peer.neighbors[level]) > mMax {
 				g.pruneNeighborsHeuristic(peer, level)
 			}
 		}
+		peer.mu.Unlock()
 	}
 
 	return selected
@@ -375,7 +399,7 @@ func (g *Graph) pruneNeighborsHeuristic(node *Node, lvl int) {
 		newNbrs = append(newNbrs, s.idx)
 	}
 
-	node.neighbors[lvl] = node.neighbors[lvl][:len(newNbrs)]
+	node.neighbors[lvl] = make([]int, len(newNbrs))
 	copy(node.neighbors[lvl], newNbrs)
 }
 
@@ -451,12 +475,6 @@ func (g *Graph) Search(query []float64, k int) ([]int, error) {
 		k = len(g.nodes)
 	}
 
-	if g.builder.Len() > 0 {
-		chunk := g.builder.NewArray().(*array.Float64)
-		g.vectors = append(g.vectors, chunk)
-		g.builder = array.NewFloat64Builder(g.allocator)
-	}
-
 	if len(g.nodes) <= g.m {
 		return g.exhaustiveSearch(query, k), nil
 	}
@@ -513,9 +531,16 @@ func (g *Graph) hnswSearch(query []float64, k int) []int {
 
 // greedySearchLayerFast performs optimized greedy search.
 func (g *Graph) greedySearchLayerFast(vec []float64, entry *Node, lvl int) *Node {
-	if entry == nil || lvl >= len(entry.neighbors) {
+	if entry == nil {
 		return entry
 	}
+
+	entry.mu.RLock()
+	if lvl >= len(entry.neighbors) {
+		entry.mu.RUnlock()
+		return entry
+	}
+	entry.mu.RUnlock()
 
 	cur := entry
 	curVec := g.getVectorFast(cur.idx)
@@ -524,7 +549,16 @@ func (g *Graph) greedySearchLayerFast(vec []float64, entry *Node, lvl int) *Node
 	improved := true
 	for improved {
 		improved = false
-		for _, ni := range cur.neighbors[lvl] {
+
+		cur.mu.RLock()
+		if lvl >= len(cur.neighbors) {
+			cur.mu.RUnlock()
+			break
+		}
+		neighbors := cur.neighbors[lvl]
+		cur.mu.RUnlock()
+
+		for _, ni := range neighbors {
 			if ni >= len(g.nodes) {
 				continue
 			}
@@ -576,11 +610,16 @@ func (g *Graph) searchLayerFast(query []float64, entry *Node, lvl, ef int) []*ca
 		}
 
 		node := g.nodes[c.idx]
+
+		node.mu.RLock()
 		if lvl >= len(node.neighbors) {
+			node.mu.RUnlock()
 			continue
 		}
+		neighbors := node.neighbors[lvl]
+		node.mu.RUnlock()
 
-		for _, ni := range node.neighbors[lvl] {
+		for _, ni := range neighbors {
 			if ni >= len(g.nodes) {
 				continue
 			}
@@ -667,6 +706,7 @@ func (g *Graph) getVectorFast(idx int) []float64 {
 // selectNeighborsFast optimized neighbor selection.
 func selectNeighborsFast(cands []*candidate, m int) []*candidate {
 	if len(cands) <= m {
+		sort.Slice(cands, func(i, j int) bool { return cands[i].dist < cands[j].dist })
 		return cands
 	}
 
@@ -810,6 +850,15 @@ func (g *Graph) Len() int {
 	return len(g.nodes)
 }
 
+func (g *Graph) flushBuilderLocked() {
+	if g.builder.Len() == 0 {
+		return
+	}
+	chunk := g.builder.NewArray().(*array.Float64)
+	g.vectors = append(g.vectors, chunk)
+	g.builder = array.NewFloat64Builder(g.allocator)
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -840,10 +889,6 @@ func (g *Graph) selectNeighborsHeuristic(candidates []*candidate, m int) []*cand
 	}
 
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].dist < candidates[j].dist })
-
-	if len(candidates) <= m*2 {
-		return candidates[:m]
-	}
 
 	selected := make([]*candidate, 0, m)
 	selected = append(selected, candidates[0])

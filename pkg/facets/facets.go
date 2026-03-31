@@ -76,6 +76,11 @@ func (f *EqualityFilter) Match(value interface{}) bool {
 		}
 	}
 
+	// Handle numerical comparisons which may mismatch due to JSON float64 unmarshaling
+	if isNumeric(f.Value) && isNumeric(value) {
+		return toFloat64(f.Value) == toFloat64(value)
+	}
+
 	// Use reflect for basic equality comparison
 	return reflect.DeepEqual(f.Value, value)
 }
@@ -293,7 +298,7 @@ func (f *SetFilter) Match(value interface{}) bool {
 				if strings.EqualFold(strValue, strFilter) {
 					return true
 				}
-			} else if reflect.DeepEqual(value, v) {
+			} else if valuesEqual(value, v) {
 				return true
 			}
 		}
@@ -306,7 +311,7 @@ func (f *SetFilter) Match(value interface{}) bool {
 		for i := 0; i < valueSlice.Len(); i++ {
 			item := valueSlice.Index(i).Interface()
 			for _, v := range f.Values {
-				if reflect.DeepEqual(item, v) {
+				if valuesEqual(item, v) {
 					return true
 				}
 			}
@@ -316,7 +321,7 @@ func (f *SetFilter) Match(value interface{}) bool {
 
 	// Regular equality check
 	for _, v := range f.Values {
-		if reflect.DeepEqual(value, v) {
+		if valuesEqual(value, v) {
 			return true
 		}
 	}
@@ -465,4 +470,51 @@ func FacetsFromJSON(metadataJSON json.RawMessage, facetFields []string) ([]Facet
 	}
 
 	return ExtractFacets(metadata, facetFields), nil
+}
+
+// isNumeric returns true if the value is a numeric type
+func isNumeric(v interface{}) bool {
+	switch v.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return true
+	}
+	return false
+}
+
+// toFloat64 converts any numeric type to float64
+func toFloat64(v interface{}) float64 {
+	switch val := v.(type) {
+	case int:
+		return float64(val)
+	case int8:
+		return float64(val)
+	case int16:
+		return float64(val)
+	case int32:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case uint:
+		return float64(val)
+	case uint8:
+		return float64(val)
+	case uint16:
+		return float64(val)
+	case uint32:
+		return float64(val)
+	case uint64:
+		return float64(val)
+	case float32:
+		return float64(val)
+	case float64:
+		return float64(val)
+	}
+	return 0
+}
+
+func valuesEqual(a, b interface{}) bool {
+	if isNumeric(a) && isNumeric(b) {
+		return toFloat64(a) == toFloat64(b)
+	}
+	return reflect.DeepEqual(a, b)
 }

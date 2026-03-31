@@ -54,7 +54,22 @@ func TestArrowHNSWIndex_SaveLoad(t *testing.T) { // arrow-hnsw
 	q := b2.NewArray()
 	defer q.Release()
 	res, err := idx2.Search(q.(*array.Float32), 1)
-	if err != nil || len(res) != 1 || res[0].ID != "0" { // loaded id string is index string
+	if err != nil || len(res) != 1 || res[0].ID != "a" {
 		t.Fatalf("unexpected search result after load: %v %+v", err, res)
+	}
+}
+
+func TestArrowHNSWIndex_RejectsDuplicateIDs(t *testing.T) {
+	idx := NewArrowHNSWIndex(2)
+	builder := array.NewFloat32Builder(memory.DefaultAllocator)
+	builder.AppendValues([]float32{1, 2}, nil)
+	vec := builder.NewArray()
+	defer vec.Release()
+
+	if err := idx.Add(vec.(*array.Float32), "dup"); err != nil {
+		t.Fatalf("first add failed: %v", err)
+	}
+	if err := idx.Add(vec.(*array.Float32), "dup"); err == nil {
+		t.Fatal("expected duplicate add to fail")
 	}
 }

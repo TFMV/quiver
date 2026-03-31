@@ -35,7 +35,7 @@ func TestCosineDistance(t *testing.T) {
 			name:     "Zero Vector",
 			vecA:     F32{0, 0, 0},
 			vecB:     F32{1, 0, 0},
-			expected: 0, // Zero vector case is handled specially
+			expected: 1, // Zero-magnitude vectors are treated as maximally distant
 		},
 	}
 

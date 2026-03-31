@@ -1,0 +1,49 @@
+?   	github.com/TFMV/quiver/pkg/api	[no test files]
+PASS
+ok  	github.com/TFMV/quiver/pkg/arrowindex	1.050s
+PASS
+ok  	github.com/TFMV/quiver/pkg/core	0.571s
+goos: darwin
+goarch: arm64
+pkg: github.com/TFMV/quiver/pkg/facets
+cpu: Apple M4
+BenchmarkMatchesAllFilters-10    	18590532	        63.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExtractFacets-10        	 7701009	       151.8 ns/op	     256 B/op	       6 allocs/op
+PASS
+ok  	github.com/TFMV/quiver/pkg/facets	3.789s
+--- FAIL: TestHNSWAdapter_Insert (0.00s)
+    adapter_test.go:72: Insert() didn't add ID mapping for 'test1'
+FAIL
+exit status 1
+FAIL	github.com/TFMV/quiver/pkg/hnsw	0.220s
+goos: darwin
+goarch: arm64
+pkg: github.com/TFMV/quiver/pkg/hybrid
+cpu: Apple M4
+BenchmarkExactIndexSearch-10     	   31666	     41912 ns/op	   24600 B/op	       2 allocs/op
+BenchmarkHybridIndexSearch-10    	   79818	     15165 ns/op	   11408 B/op	     191 allocs/op
+PASS
+ok  	github.com/TFMV/quiver/pkg/hybrid	3.515s
+?   	github.com/TFMV/quiver/pkg/metrics	[no test files]
+goos: darwin
+goarch: arm64
+pkg: github.com/TFMV/quiver/pkg/persistence
+cpu: Apple M4
+BenchmarkCollectionSearch-10       	   50066	     22710 ns/op	   24672 B/op	       4 allocs/op
+BenchmarkSortSearchResults-10      	  633454	      1828 ns/op	      96 B/op	       3 allocs/op
+BenchmarkCollectionAddVector-10    	 3917848	       399.5 ns/op	     346 B/op	       3 allocs/op
+PASS
+ok  	github.com/TFMV/quiver/pkg/persistence	4.729s
+?   	github.com/TFMV/quiver/pkg/types	[no test files]
+goos: darwin
+goarch: arm64
+pkg: github.com/TFMV/quiver/pkg/vectortypes
+cpu: Apple M4
+BenchmarkCosineDistance-10              	15599887	        76.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkEuclideanDistance-10           	17074356	        70.72 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSquaredEuclideanDistance-10    	17620315	        67.32 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDotProductDistance-10          	17253660	        69.52 ns/op	       0 B/op	       0 allocs/op
+BenchmarkManhattanDistance-10           	21741493	        58.32 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/TFMV/quiver/pkg/vectortypes	7.659s
+FAIL

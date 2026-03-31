@@ -558,13 +558,13 @@ func (w *HybridIndexWrapper) Size() int {
 	return w.hybridIndex.Size()
 }
 
-// BatchInsert adds multiple vectors in a batch operation
-func (w *HybridIndexWrapper) BatchInsert(vectors map[string]vectortypes.F32) error {
+// InsertBatch adds multiple vectors in a batch operation.
+func (w *HybridIndexWrapper) InsertBatch(vectors map[string]vectortypes.F32) error {
 	return w.hybridIndex.InsertBatch(vectors)
 }
 
-// BatchDelete removes multiple vectors in a batch operation
-func (w *HybridIndexWrapper) BatchDelete(ids []string) error {
+// DeleteBatch removes multiple vectors in a batch operation.
+func (w *HybridIndexWrapper) DeleteBatch(ids []string) error {
 	return w.hybridIndex.DeleteBatch(ids)
 }
 
@@ -602,12 +602,6 @@ func (db *DB) BatchInsert(request BatchInsertRequest) error {
 		return err
 	}
 
-	// If collection uses the hybrid index, use its batch insert for better performance
-	if hybridWrapper, ok := collection.Index.(*HybridIndexWrapper); ok {
-		return hybridWrapper.hybridIndex.InsertBatch(request.Vectors)
-	}
-
-	// Otherwise, use collection's batch add
 	vectors := make([]vectortypes.Vector, 0, len(request.Vectors))
 	for id, vector := range request.Vectors {
 		var metadata json.RawMessage
@@ -642,12 +636,6 @@ func (db *DB) BatchDelete(request BatchDeleteRequest) error {
 		return err
 	}
 
-	// If collection uses the hybrid index, use its batch delete for better performance
-	if hybridWrapper, ok := collection.Index.(*HybridIndexWrapper); ok {
-		return hybridWrapper.hybridIndex.DeleteBatch(request.IDs)
-	}
-
-	// Otherwise, use collection's batch delete
 	return collection.DeleteBatch(request.IDs)
 }
 

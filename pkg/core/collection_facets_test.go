@@ -13,8 +13,9 @@ import (
 
 // MockIndex implements the Index interface for testing
 type MockFacetIndex struct {
-	vectors  map[string][]float32
-	searches int
+	vectors       map[string][]float32
+	searches      int
+	searchResults []types.BasicSearchResult
 }
 
 func NewMockFacetIndex() *MockFacetIndex {
@@ -35,6 +36,9 @@ func (m *MockFacetIndex) Delete(id string) error {
 
 func (m *MockFacetIndex) Search(vector []float32, k int) ([]types.BasicSearchResult, error) {
 	m.searches++
+	if len(m.searchResults) > 0 {
+		return m.searchResults, nil
+	}
 	results := make([]types.BasicSearchResult, 0, len(m.vectors))
 	for id := range m.vectors {
 		// For testing, just use a placeholder distance
@@ -512,5 +516,41 @@ func TestSearchWithFacets(t *testing.T) {
 	// Updated check: at least one of v1 or v4 should be in the results
 	if !resultIDs["v1"] && !resultIDs["v4"] {
 		t.Errorf("Expected results to include at least one of v1 or v4, got %v", resultIDs)
+	}
+}
+
+func TestSearchWithFacetsScansPastInitialWindow(t *testing.T) {
+	index := NewMockFacetIndex()
+	collection := NewCollection("facet_test", 3, index)
+	collection.SetFacetFields([]string{"category"})
+
+	if err := collection.Add("id1", []float32{1, 0, 0}, json.RawMessage(`{"category":"other"}`)); err != nil {
+		t.Fatalf("Add(id1) failed: %v", err)
+	}
+	if err := collection.Add("id2", []float32{1, 0, 0}, json.RawMessage(`{"category":"match"}`)); err != nil {
+		t.Fatalf("Add(id2) failed: %v", err)
+	}
+	if err := collection.Add("id3", []float32{1, 0, 0}, json.RawMessage(`{"category":"match"}`)); err != nil {
+		t.Fatalf("Add(id3) failed: %v", err)
+	}
+
+	index.searchResults = []types.BasicSearchResult{
+		{ID: "id1", Distance: 0.01},
+		{ID: "id2", Distance: 0.02},
+		{ID: "id3", Distance: 0.03},
+	}
+
+	results, err := collection.SearchWithFacets([]float32{1, 0, 0}, 1, []facets.Filter{
+		facets.NewEqualityFilter("category", "match"),
+	})
+	if err != nil {
+		t.Fatalf("SearchWithFacets failed: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("SearchWithFacets returned %d results, want 1", len(results))
+	}
+	if results[0].ID != "id2" {
+		t.Fatalf("SearchWithFacets returned %s, want id2", results[0].ID)
 	}
 }

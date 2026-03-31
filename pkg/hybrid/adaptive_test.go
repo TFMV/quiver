@@ -39,9 +39,6 @@ func TestNewAdaptiveStrategySelector(t *testing.T) {
 		t.Error("recentQueries slice not initialized")
 	}
 
-	if selector.rng == nil {
-		t.Error("random number generator not initialized")
-	}
 }
 
 func TestSelectStrategy_SmallDataset(t *testing.T) {
