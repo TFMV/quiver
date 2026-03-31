@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -433,47 +434,22 @@ func matchesFilter(metadata map[string]interface{}, filter Filter) bool {
 
 	switch filter.Operator {
 	case Equals:
-		return fmt.Sprintf("%v", value) == fmt.Sprintf("%v", filter.Value)
+		return valuesEqual(value, filter.Value)
 	case NotEquals:
-		return fmt.Sprintf("%v", value) != fmt.Sprintf("%v", filter.Value)
+		return !valuesEqual(value, filter.Value)
 	case GreaterThan:
-		// Handle numeric comparisons
-		switch v := value.(type) {
-		case int:
-			if fv, ok := filter.Value.(int); ok {
-				return v > fv
-			}
-			if fv, ok := filter.Value.(float64); ok {
-				return float64(v) > fv
-			}
-		case float64:
-			if fv, ok := filter.Value.(int); ok {
-				return v > float64(fv)
-			}
-			if fv, ok := filter.Value.(float64); ok {
-				return v > fv
-			}
-		case float32:
-			if fv, ok := filter.Value.(int); ok {
-				return float64(v) > float64(fv)
-			}
-			if fv, ok := filter.Value.(float64); ok {
-				return float64(v) > fv
-			}
-		}
-		// Fall back to string comparison if types don't match
-		return fmt.Sprintf("%v", value) > fmt.Sprintf("%v", filter.Value)
+		return compareValues(value, filter.Value) > 0
 	case GreaterThanOrEqual:
-		return fmt.Sprintf("%v", value) >= fmt.Sprintf("%v", filter.Value)
+		return compareValues(value, filter.Value) >= 0
 	case LessThan:
-		return fmt.Sprintf("%v", value) < fmt.Sprintf("%v", filter.Value)
+		return compareValues(value, filter.Value) < 0
 	case LessThanOrEqual:
-		return fmt.Sprintf("%v", value) <= fmt.Sprintf("%v", filter.Value)
+		return compareValues(value, filter.Value) <= 0
 	case In:
 		// Value should be a slice
 		if values, ok := filter.Value.([]interface{}); ok {
 			for _, v := range values {
-				if fmt.Sprintf("%v", value) == fmt.Sprintf("%v", v) {
+				if valuesEqual(value, v) {
 					return true
 				}
 			}
@@ -483,7 +459,7 @@ func matchesFilter(metadata map[string]interface{}, filter Filter) bool {
 		// Value should be a slice
 		if values, ok := filter.Value.([]interface{}); ok {
 			for _, v := range values {
-				if fmt.Sprintf("%v", value) == fmt.Sprintf("%v", v) {
+				if valuesEqual(value, v) {
 					return false
 				}
 			}
@@ -492,6 +468,65 @@ func matchesFilter(metadata map[string]interface{}, filter Filter) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func asFloat64(value interface{}) (float64, bool) {
+	switch v := value.(type) {
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case float32:
+		return float64(v), true
+	case float64:
+		return v, true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func valuesEqual(a, b interface{}) bool {
+	if af, ok := asFloat64(a); ok {
+		if bf, ok := asFloat64(b); ok {
+			return math.Abs(af-bf) <= 1e-9
+		}
+	}
+	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+}
+
+func compareValues(a, b interface{}) int {
+	if af, ok := asFloat64(a); ok {
+		if bf, ok := asFloat64(b); ok {
+			switch {
+			case af < bf:
+				return -1
+			case af > bf:
+				return 1
+			default:
+				return 0
+			}
+		}
+	}
+
+	as := fmt.Sprintf("%v", a)
+	bs := fmt.Sprintf("%v", b)
+	switch {
+	case as < bs:
+		return -1
+	case as > bs:
+		return 1
+	default:
+		return 0
 	}
 }
 
@@ -511,11 +546,75 @@ func (c *Collection) Search(request types.SearchRequest) (types.SearchResponse, 
 	if request.TopK <= 0 {
 		return types.SearchResponse{}, errors.New("top_k must be greater than 0")
 	}
+	if c.Index.Size() == 0 {
+		return types.SearchResponse{
+			Results: []types.SearchResultItem{},
+			Metadata: types.SearchResultMetadata{
+				TotalCount: 0,
+				SearchTime: float64(time.Since(startTime).Microseconds()) / 1000.0,
+				IndexSize:  0,
+				IndexName:  c.Name,
+				Timestamp:  time.Now(),
+			},
+		}, nil
+	}
 
 	// Perform vector search
-	basicResults, err := c.Index.Search(vectortypes.F32(request.Vector), request.TopK)
+	searchK := request.TopK
+	if len(request.Filters) > 0 {
+		searchK = c.Index.Size()
+	}
+
+	basicResults, err := c.Index.Search(vectortypes.F32(request.Vector), searchK)
 	if err != nil {
 		return types.SearchResponse{}, err
+	}
+
+	// Apply metadata filters if specified
+	if len(request.Filters) > 0 {
+		// Convert filters to our internal format
+		filters := make([]Filter, len(request.Filters))
+		for i, f := range request.Filters {
+			filters[i] = Filter{
+				Field:    f.Field,
+				Operator: FilterOperator(f.Operator),
+				Value:    f.Value,
+			}
+		}
+
+		filteredResults := make([]types.BasicSearchResult, 0, min(request.TopK, len(basicResults)))
+		for _, result := range basicResults {
+			metadataJSON, exists := c.Metadata[result.ID]
+			if !exists || len(metadataJSON) == 0 {
+				continue
+			}
+
+			// Parse metadata
+			var metadataMap map[string]interface{}
+			if err := json.Unmarshal(metadataJSON, &metadataMap); err != nil {
+				continue // Skip this result if metadata can't be parsed
+			}
+
+			// Check if metadata matches all filters
+			match := true
+			for _, filter := range filters {
+				if !matchesFilter(metadataMap, filter) {
+					match = false
+					break
+				}
+			}
+
+			if match {
+				filteredResults = append(filteredResults, result)
+				if len(filteredResults) >= request.TopK {
+					break
+				}
+			}
+		}
+
+		basicResults = filteredResults
+	} else if len(basicResults) > request.TopK {
+		basicResults = basicResults[:request.TopK]
 	}
 
 	// Convert to detailed search results
@@ -540,49 +639,6 @@ func (c *Collection) Search(request types.SearchRequest) (types.SearchResponse, 
 				results[i].Metadata = metadata
 			}
 		}
-	}
-
-	// Apply metadata filters if specified
-	if len(request.Filters) > 0 {
-		// Convert filters to our internal format
-		filters := make([]Filter, len(request.Filters))
-		for i, f := range request.Filters {
-			filters[i] = Filter{
-				Field:    f.Field,
-				Operator: FilterOperator(f.Operator),
-				Value:    f.Value,
-			}
-		}
-
-		// Filter results
-		var filteredResults []types.SearchResultItem
-		for _, result := range results {
-			// Skip if there's no metadata when filters are applied
-			if len(result.Metadata) == 0 {
-				continue
-			}
-
-			// Parse metadata
-			var metadataMap map[string]interface{}
-			if err := json.Unmarshal(result.Metadata, &metadataMap); err != nil {
-				continue // Skip this result if metadata can't be parsed
-			}
-
-			// Check if metadata matches all filters
-			match := true
-			for _, filter := range filters {
-				if !matchesFilter(metadataMap, filter) {
-					match = false
-					break
-				}
-			}
-
-			if match {
-				filteredResults = append(filteredResults, result)
-			}
-		}
-
-		results = filteredResults
 	}
 
 	// Prepare the response
@@ -824,6 +880,9 @@ func (c *Collection) SearchWithFacets(
 	k int,
 	filters []facets.Filter,
 ) ([]SearchResult, error) {
+	if k <= 0 {
+		return nil, errors.New("k must be positive")
+	}
 	if len(query) != c.Dimension {
 		return nil, fmt.Errorf("query vector dimension mismatch, expected %d, got %d", c.Dimension, len(query))
 	}
@@ -852,17 +911,14 @@ func (c *Collection) SearchWithFacets(
 		return searchResults, nil
 	}
 
-	// With filters, we need to do post-filtering
-	// Request more results than k because some might be filtered out
-	multiplier := 3 // Request 3x the needed results, assuming ~1/3 will match filters
-	if multiplier*k > len(c.Vectors) {
-		multiplier = len(c.Vectors) / k
-		if multiplier < 1 {
-			multiplier = 1
-		}
+	// With filters, request the full candidate set so facet filtering preserves
+	// the true top-k instead of depending on a heuristic over-fetch multiplier.
+	searchK := c.Index.Size()
+	if searchK == 0 {
+		return []SearchResult{}, nil
 	}
 
-	results, err := c.Index.Search(vectortypes.F32(query), multiplier*k)
+	results, err := c.Index.Search(vectortypes.F32(query), searchK)
 	if err != nil {
 		return nil, fmt.Errorf("index search failed: %w", err)
 	}

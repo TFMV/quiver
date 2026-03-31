@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/TFMV/quiver/pkg/types"
@@ -31,14 +29,7 @@ func NewAdapter(config Config) *HNSWAdapter {
 
 // Insert adds a vector to the index
 func (a *HNSWAdapter) Insert(id string, vector []float32) error {
-	err := a.hnsw.Insert(id, vector)
-	if err == nil {
-		// Sync the ID mapping
-		if idx, exists := a.hnsw.NodesByID[id]; exists {
-			a.idToIndex[id] = idx
-		}
-	}
-	return err
+	return a.hnsw.Insert(id, vector)
 }
 
 // Delete removes a vector from the index
@@ -100,58 +91,7 @@ func (a *HNSWAdapter) Search(vector []float32, k int) ([]types.BasicSearchResult
 		}
 	}
 
-	// Special case handling for the specific test cases with explicit IDs
-	if len(vector) == 3 {
-		if k == 3 && math.Abs(float64(vector[0]-0.1)) < 0.001 &&
-			math.Abs(float64(vector[1]-0.1)) < 0.001 &&
-			math.Abs(float64(vector[2]-0.1)) < 0.001 {
-			// This is the "Find nearest to origin" test case
-			// Ensure specific ordering: id1, id2, id3
-			idOverride := []string{"id1", "id2", "id3"}
-			return overrideResultsOrder(results, idOverride, k), nil
-		} else if k == 2 && math.Abs(float64(vector[0]-0.9)) < 0.001 &&
-			math.Abs(float64(vector[1]-0.1)) < 0.001 &&
-			math.Abs(float64(vector[2]-0.1)) < 0.001 {
-			// This is the "Find nearest to x-axis" test case
-			// Ensure specific ordering: id6, id1 (because id6 is now closer to query)
-			idOverride := []string{"id6", "id1"}
-			return overrideResultsOrder(results, idOverride, k), nil
-		}
-	}
-
 	return results, nil
-}
-
-// overrideResultsOrder creates a new result set with the specified ID order
-func overrideResultsOrder(results []types.BasicSearchResult, idOrder []string, k int) []types.BasicSearchResult {
-	resultMap := make(map[string]types.BasicSearchResult)
-	for _, r := range results {
-		resultMap[r.ID] = r
-	}
-
-	orderedResults := make([]types.BasicSearchResult, 0, len(results))
-
-	// First add the expected order
-	for _, id := range idOrder {
-		if r, exists := resultMap[id]; exists {
-			orderedResults = append(orderedResults, r)
-			delete(resultMap, id) // Remove to avoid duplicates
-		}
-	}
-
-	// Then add any remaining results
-	for _, r := range results {
-		if _, exists := resultMap[r.ID]; exists {
-			orderedResults = append(orderedResults, r)
-		}
-	}
-
-	// Limit to k results
-	if len(orderedResults) > k {
-		orderedResults = orderedResults[:k]
-	}
-
-	return orderedResults
 }
 
 // Size returns the number of vectors in the index
@@ -223,8 +163,7 @@ func DotProductDistanceFunc(a, b []float32) (float32, error) {
 		dotProduct += a[i] * b[i]
 	}
 
-	// Negate the result to make it a distance
-	return -dotProduct, nil
+	return 1.0 - dotProduct, nil
 }
 
 // Errors
@@ -261,60 +200,22 @@ func (a *HNSWAdapter) GetPerformanceMetrics() map[string]float64 {
 
 // InsertBatch adds multiple vectors to the index in a single operation
 func (a *HNSWAdapter) InsertBatch(vectors map[string][]float32) error {
-	// Use the lock in HNSW only once for the entire batch
+	// Pre-check for duplicates under rapid lock
 	a.hnsw.Lock()
-	defer a.hnsw.Unlock()
-
-	// Pre-check for duplicates
 	for id := range vectors {
 		if _, exists := a.hnsw.NodesByID[id]; exists {
+			a.hnsw.Unlock()
 			return fmt.Errorf("vector with ID %s already exists", id)
 		}
 	}
+	a.hnsw.Unlock()
 
-	// Process all vectors
+	// Process all vectors independently 
+	// We call the natively concurrent Insert function directly to share locks dynamically
 	for id, vector := range vectors {
-		// Create node without locking (we already have the global lock)
-		level := a.hnsw.randomLevel()
-		node := &Node{
-			VectorID:    id,
-			Vector:      vector,
-			Connections: make([][]uint32, level+1),
-			Level:       level,
-		}
-
-		// Initialize connections for each level
-		for i := 0; i <= level; i++ {
-			maxConnections := a.hnsw.M
-			if i == 0 {
-				maxConnections = a.hnsw.MaxM0
-			}
-			node.Connections[i] = make([]uint32, 0, maxConnections)
-		}
-
-		// Add node to the graph
-		nodeID := uint32(len(a.hnsw.Nodes))
-		a.hnsw.Nodes = append(a.hnsw.Nodes, node)
-		a.hnsw.NodesByID[id] = nodeID
-		a.idToIndex[id] = nodeID
-
-		// Update the current level if needed
-		if level > a.hnsw.CurrentLevel {
-			a.hnsw.CurrentLevel = level
-			a.hnsw.EntryPoint = nodeID
-		}
-
-		// Connect the node to the graph (without locking, as we have the global lock)
-		if err := a.hnsw.connectNode(nodeID, vector, level); err != nil {
-			// If connection fails, clean up
-			a.hnsw.Nodes[nodeID] = nil
-			delete(a.hnsw.NodesByID, id)
-			delete(a.idToIndex, id)
+		if err := a.Insert(id, vector); err != nil {
 			return err
 		}
-
-		// Increment size
-		atomic.AddUint32(&a.hnsw.size, 1)
 	}
 
 	return nil
@@ -322,63 +223,11 @@ func (a *HNSWAdapter) InsertBatch(vectors map[string][]float32) error {
 
 // DeleteBatch removes multiple vectors from the index in a single operation
 func (a *HNSWAdapter) DeleteBatch(ids []string) error {
-	// Use the lock in HNSW only once for the entire batch
-	a.hnsw.Lock()
-	defer a.hnsw.Unlock()
-
-	// Process all deletions, skipping non-existent IDs
+	// Call native Delete avoiding massive single locks spanning outer iteration
 	for _, id := range ids {
-		// Skip non-existent IDs
-		nodeID, exists := a.hnsw.NodesByID[id]
-		if !exists {
+		if err := a.Delete(id); err != nil {
+			// Skip and log internally depending on severity natively
 			continue
-		}
-
-		// Remove connections to this node from all other nodes
-		for _, node := range a.hnsw.Nodes {
-			if node == nil || node.VectorID == id {
-				continue
-			}
-
-			// Update connections at each level
-			for level := 0; level <= node.Level && level <= a.hnsw.Nodes[nodeID].Level; level++ {
-				connections := node.Connections[level]
-				for i, connID := range connections {
-					if connID == nodeID {
-						// Remove this connection by replacing it with the last element and shrinking the slice
-						lastIdx := len(connections) - 1
-						connections[i] = connections[lastIdx]
-						node.Connections[level] = connections[:lastIdx]
-						break
-					}
-				}
-			}
-		}
-
-		// Mark node as deleted by setting it to nil
-		// We don't actually remove it to avoid reindexing
-		a.hnsw.Nodes[nodeID] = nil
-
-		// Remove from maps
-		delete(a.hnsw.NodesByID, id)
-		delete(a.idToIndex, id)
-
-		// Decrement size
-		atomic.AddUint32(&a.hnsw.size, ^uint32(0)) // equivalent to size--
-	}
-
-	// Update entry point if needed
-	if a.hnsw.EntryPoint >= uint32(len(a.hnsw.Nodes)) || a.hnsw.Nodes[a.hnsw.EntryPoint] == nil {
-		// Find a new entry point
-		a.hnsw.EntryPoint = 0
-		maxLevel := -1
-
-		for i, node := range a.hnsw.Nodes {
-			if node != nil && node.Level > maxLevel {
-				maxLevel = node.Level
-				a.hnsw.EntryPoint = uint32(i)
-				a.hnsw.CurrentLevel = maxLevel
-			}
 		}
 	}
 
@@ -536,14 +385,14 @@ func (a *HNSWAdapter) SearchWithNegativeExample(query []float32, negativeExample
 	// Get the extended results with negative distances
 	extResults := make([]extendedResult, 0, len(initialResults))
 	for _, result := range initialResults {
-		// Get the vector for this result
-		nodeIdx, exists := a.idToIndex[result.ID]
+		// Get the vector for this result under safe HNSW mapping
+		a.hnsw.RLock()
+		nodeIdx, exists := a.hnsw.NodesByID[result.ID]
 		if !exists {
+			a.hnsw.RUnlock()
 			continue
 		}
 
-		// Use HNSW read lock since we're accessing the node
-		a.hnsw.RLock()
 		node := a.hnsw.Nodes[nodeIdx]
 		if node == nil {
 			a.hnsw.RUnlock()
@@ -565,52 +414,16 @@ func (a *HNSWAdapter) SearchWithNegativeExample(query []float32, negativeExample
 		})
 	}
 
-	// Re-rank results based on combined distance
-	// For each result, combine:
-	// - Original distance to query (lower is better)
-	// - Distance to negative example (higher is better)
 	for i := range extResults {
-		// Original distance is weighted by (1-negWeight)
-		// Inverted negative distance is weighted by negWeight
-		// Note: need to normalize negative distance based on the distance function used
-
-		// Normalize negative distance based on the distance function
-		normNegDist := extResults[i].negDistance
-		// Assuming distFunc == CosineDistanceFunc or EuclideanDistanceFunc
-		// For cosine, closer to 0 is more similar, closer to 2 is more dissimilar
-		// For Euclidean, closer to 0 is more similar, larger values are more dissimilar
-
-		// Get a signature of the distance function
-		distFuncName := fmt.Sprintf("%T", a.hnsw.DistanceFunc)
-
-		// Normalize based on distance function type
-		if strings.Contains(distFuncName, "CosineDistanceFunc") {
-			// For cosine, max is 2 (complete opposite), min is 0 (identical)
-			// Invert: 0 (identical) should increase distance, 2 (opposite) should decrease
-			normNegDist = 1.0 - (normNegDist / 2.0)
-		} else if strings.Contains(distFuncName, "EuclideanDistanceFunc") {
-			// For Euclidean, max depends on vector size, but can assume a reasonable upper bound
-			// and normalize to approximately [0,1]
-			maxEuclidean := float32(1.414) // sqrt(2), good for normalized vectors
-			normNegDist = minFloat32(normNegDist/maxEuclidean, 1.0)
-		}
-
-		// Combine distances:
-		// - Original distance weighted by (1-negWeight)
-		// - Normalized negative distance weighted by negWeight
-		// Higher normNegDist means more similar to negative example, which we don't want
-		combinedDist := (extResults[i].Distance * (1 - negativeWeight)) - ((1 - normNegDist) * negativeWeight)
-
-		// Ensure we don't go below 0
-		if combinedDist < 0 {
-			combinedDist = 0
-		}
-
-		extResults[i].Distance = combinedDist
+		// We prioritize smaller distance to query, and larger distance to negative example.
+		// Stable formula avoiding empirical batch-based normalization.
+		extResults[i].Distance = extResults[i].Distance - (negativeWeight * extResults[i].negDistance)
 	}
 
-	// Re-sort by the adjusted distances
-	sort.Slice(extResults, func(i, j int) bool {
+	sort.SliceStable(extResults, func(i, j int) bool {
+		if extResults[i].Distance == extResults[j].Distance {
+			return extResults[i].ID < extResults[j].ID
+		}
 		return extResults[i].Distance < extResults[j].Distance
 	})
 
@@ -643,4 +456,11 @@ func minFloat32(a, b float32) float32 {
 		return a
 	}
 	return b
+}
+
+func normalizeDistance(value, minValue, maxValue float32) float32 {
+	if maxValue <= minValue {
+		return 0
+	}
+	return (value - minValue) / (maxValue - minValue)
 }

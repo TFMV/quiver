@@ -546,6 +546,53 @@ func TestCollection_LegacySearch(t *testing.T) {
 	}
 }
 
+func TestCollection_SearchFiltersIgnoreIncludeMetadataAndTopKPrefilter(t *testing.T) {
+	mockIndex := NewMockIndex()
+	collection := NewCollection("test_collection", 3, mockIndex)
+
+	entries := []struct {
+		id       string
+		metadata string
+	}{
+		{id: "id1", metadata: `{"category":"B","score":5}`},
+		{id: "id2", metadata: `{"category":"A","score":10}`},
+		{id: "id3", metadata: `{"category":"A","score":15}`},
+	}
+
+	for _, entry := range entries {
+		if err := collection.Add(entry.id, []float32{1, 0, 0}, json.RawMessage(entry.metadata)); err != nil {
+			t.Fatalf("Add(%s) failed: %v", entry.id, err)
+		}
+	}
+
+	mockIndex.searchResults = []types.BasicSearchResult{
+		{ID: "id1", Distance: 0.01},
+		{ID: "id2", Distance: 0.02},
+		{ID: "id3", Distance: 0.03},
+	}
+
+	response, err := collection.Search(types.SearchRequest{
+		Vector: []float32{1, 0, 0},
+		TopK:   1,
+		Filters: []types.Filter{
+			{Field: "category", Value: "A", Operator: string(Equals)},
+		},
+		Options: types.SearchOptions{
+			IncludeMetadata: false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search() failed: %v", err)
+	}
+
+	if len(response.Results) != 1 {
+		t.Fatalf("Search() returned %d results, want 1", len(response.Results))
+	}
+	if response.Results[0].ID != "id2" {
+		t.Fatalf("Search() returned %s, want id2", response.Results[0].ID)
+	}
+}
+
 func TestCollection_Update(t *testing.T) {
 	mockIndex := NewMockIndex()
 	collection := NewCollection("test_collection", 3, mockIndex)
@@ -719,6 +766,18 @@ func TestMatchesFilter(t *testing.T) {
 			metadata: map[string]interface{}{"key": 10},
 			filter:   Filter{Field: "key", Operator: GreaterThan, Value: 15},
 			want:     false,
+		},
+		{
+			name:     "GreaterThanOrEqual - Numeric Match",
+			metadata: map[string]interface{}{"key": 10.0},
+			filter:   Filter{Field: "key", Operator: GreaterThanOrEqual, Value: 10},
+			want:     true,
+		},
+		{
+			name:     "LessThanOrEqual - Numeric Match",
+			metadata: map[string]interface{}{"key": 10},
+			filter:   Filter{Field: "key", Operator: LessThanOrEqual, Value: 10.0},
+			want:     true,
 		},
 		{
 			name:     "In - Match",

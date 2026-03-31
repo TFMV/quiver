@@ -256,6 +256,57 @@ func TestDB_CreateCollection(t *testing.T) {
 	})
 }
 
+func TestDB_BatchInsertPreservesMetadataForHybridCollections(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "quiver-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	db, err := NewDB(DBOptions{
+		StoragePath:       tempDir,
+		EnableMetrics:     false,
+		EnablePersistence: false,
+		DefaultHNSWConfig: hnsw.Config{
+			M:              16,
+			EfConstruction: 100,
+			DistanceFunc:   hnsw.CosineDistanceFunc,
+		},
+		EnableHybridSearch: true,
+		HybridConfig:       hybrid.DefaultIndexConfig(),
+	})
+	if err != nil {
+		t.Fatalf("NewDB() failed: %v", err)
+	}
+
+	collection, err := db.CreateCollection("batch_meta", 3, vectortypes.GetSurfaceByType(vectortypes.Cosine))
+	if err != nil {
+		t.Fatalf("CreateCollection() failed: %v", err)
+	}
+
+	err = db.BatchInsert(BatchInsertRequest{
+		Collection: "batch_meta",
+		Vectors: map[string]vectortypes.F32{
+			"v1": {1, 0, 0},
+			"v2": {0, 1, 0},
+		},
+		Metadata: map[string]json.RawMessage{
+			"v1": json.RawMessage(`{"category":"a"}`),
+			"v2": json.RawMessage(`{"category":"b"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("BatchInsert() failed: %v", err)
+	}
+
+	if string(collection.Metadata["v1"]) != `{"category":"a"}` {
+		t.Fatalf("metadata for v1 not preserved: %s", string(collection.Metadata["v1"]))
+	}
+	if string(collection.Metadata["v2"]) != `{"category":"b"}` {
+		t.Fatalf("metadata for v2 not preserved: %s", string(collection.Metadata["v2"]))
+	}
+}
+
 func TestDB_GetCollection(t *testing.T) {
 	// Create a temporary directory for test storage
 	tempDir, err := os.MkdirTemp("", "quiver-test")

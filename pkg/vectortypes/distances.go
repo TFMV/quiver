@@ -23,7 +23,7 @@ func CosineDistance(a, b F32) float32 {
 
 	// Guard against divide-by-zero
 	if magnitudeA == 0 || magnitudeB == 0 {
-		return 0
+		return 1
 	}
 
 	// Compute cosine similarity and convert to cosine distance

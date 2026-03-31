@@ -22,9 +22,6 @@ type AdaptiveStrategySelector struct {
 	// Recent query metrics for analysis
 	recentQueries []QueryMetrics
 
-	// Random number generator for exploration
-	rng *rand.Rand
-
 	// Lock for thread safety
 	mu sync.RWMutex
 }
@@ -37,7 +34,6 @@ func NewAdaptiveStrategySelector(config AdaptiveConfig) *AdaptiveStrategySelecto
 		dimThreshold:   config.InitialDimThreshold,
 		metrics:        make(map[IndexType]*StrategyStats),
 		recentQueries:  make([]QueryMetrics, 0, config.MetricsWindowSize),
-		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -47,8 +43,8 @@ func (a *AdaptiveStrategySelector) SelectStrategy(vectorCount, dimension, k int)
 	defer a.mu.RUnlock()
 
 	// Exploration: sometimes try a random strategy to gather performance data
-	if a.rng.Float64() < a.config.ExplorationFactor {
-		if a.rng.Float64() < 0.5 {
+	if rand.Float64() < a.config.ExplorationFactor {
+		if rand.Float64() < 0.5 {
 			return ExactIndexType
 		}
 		return HNSWIndexType

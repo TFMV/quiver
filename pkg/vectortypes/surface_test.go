@@ -188,7 +188,7 @@ func TestContraMap(t *testing.T) {
 			name:     "Empty Strings",
 			strA:     "",
 			strB:     "",
-			expected: 0.0, // Both convert to zero vectors
+			expected: 1.0, // Both convert to zero vectors, which cosine treats as maximally distant
 		},
 	}
 
