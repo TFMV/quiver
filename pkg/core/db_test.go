@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,7 +84,7 @@ func TestNewDB(t *testing.T) {
 				EnablePersistence: true,
 			},
 			wantErr:     true,
-			errContains: "invalid configuration",
+			errContains: "storage path is required when persistence is enabled",
 		},
 	}
 
@@ -98,7 +99,7 @@ func TestNewDB(t *testing.T) {
 			}
 
 			if tt.wantErr && tt.errContains != "" && err != nil {
-				if err.Error() != tt.errContains {
+				if !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("NewDB() error = %v, want error containing %v", err, tt.errContains)
 				}
 				return

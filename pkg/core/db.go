@@ -23,6 +23,8 @@ var (
 	ErrInvalidConfiguration = errors.New("invalid configuration")
 	ErrBackupFailed         = errors.New("backup failed")
 	ErrRestoreFailed        = errors.New("restore failed")
+	ErrEmptyCollectionName  = errors.New("collection name cannot be empty")
+	ErrInvalidStoragePath   = errors.New("storage path is required when persistence is enabled")
 )
 
 // DBOptions contains configuration parameters for the Quiver database
@@ -41,6 +43,19 @@ type DBOptions struct {
 	EnableHybridSearch bool
 	// Hybrid index configuration
 	HybridConfig hybrid.IndexConfig
+}
+
+// Validate checks if the DBOptions are valid
+func (o DBOptions) Validate() error {
+	if o.EnablePersistence && o.StoragePath == "" {
+		return ErrInvalidStoragePath
+	}
+
+	if o.FlushInterval < 0 {
+		return errors.New("flush interval cannot be negative")
+	}
+
+	return nil
 }
 
 // DefaultDBOptions returns the default configuration for Quiver
@@ -80,8 +95,8 @@ type DB struct {
 // NewDB creates a new Quiver database with the given options
 func NewDB(options DBOptions) (*DB, error) {
 	// Validate options
-	if options.EnablePersistence && options.StoragePath == "" {
-		return nil, ErrInvalidConfiguration
+	if err := options.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid DB options: %w", err)
 	}
 
 	// Create storage directory if it doesn't exist and persistence is enabled
@@ -278,6 +293,11 @@ func (db *DB) Close() error {
 func (db *DB) CreateCollection(name string, dimension int, distanceFunc vectortypes.Surface[vectortypes.F32]) (*Collection, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+
+	// Validate collection name
+	if name == "" {
+		return nil, ErrEmptyCollectionName
+	}
 
 	// Check if collection already exists
 	if _, exists := db.collections[name]; exists {
@@ -597,9 +617,26 @@ type BatchInsertRequest struct {
 
 // BatchInsert inserts multiple vectors into a collection in a single operation
 func (db *DB) BatchInsert(request BatchInsertRequest) error {
+	// Validate request
+	if request.Collection == "" {
+		return ErrCollectionNotFound
+	}
+
+	if len(request.Vectors) == 0 {
+		return errors.New("no vectors provided for batch insert")
+	}
+
 	collection, err := db.GetCollection(request.Collection)
 	if err != nil {
 		return err
+	}
+
+	// Validate all vectors have matching dimension
+	dim := collection.Dimension
+	for id, vector := range request.Vectors {
+		if len(vector) != dim {
+			return fmt.Errorf("%w for vector %s: expected %d, got %d", ErrInvalidDimension, id, dim, len(vector))
+		}
 	}
 
 	vectors := make([]vectortypes.Vector, 0, len(request.Vectors))
@@ -631,6 +668,15 @@ type BatchDeleteRequest struct {
 
 // BatchDelete removes multiple vectors from a collection in a single operation
 func (db *DB) BatchDelete(request BatchDeleteRequest) error {
+	// Validate request
+	if request.Collection == "" {
+		return ErrCollectionNotFound
+	}
+
+	if len(request.IDs) == 0 {
+		return errors.New("no IDs provided for batch delete")
+	}
+
 	collection, err := db.GetCollection(request.Collection)
 	if err != nil {
 		return err
@@ -661,6 +707,15 @@ type BatchSearchResponse struct {
 func (db *DB) BatchSearch(request BatchSearchRequest) (BatchSearchResponse, error) {
 	// Start timing the batch search operation
 	startTime := time.Now()
+
+	// Validate request
+	if request.Collection == "" {
+		return BatchSearchResponse{}, ErrCollectionNotFound
+	}
+
+	if len(request.Requests) == 0 {
+		return BatchSearchResponse{}, errors.New("no search requests provided")
+	}
 
 	collection, err := db.GetCollection(request.Collection)
 	if err != nil {

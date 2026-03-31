@@ -5,6 +5,7 @@ package index
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -21,61 +22,105 @@ type Result struct {
 }
 
 // ArrowHNSWIndex stores vectors in Arrow format backed by an HNSW graph.
-type ArrowHNSWIndex struct { // arrow-hnsw
+type ArrowHNSWIndex struct {
 	graph     *arrowindex.Graph
 	dim       int
 	allocator memory.Allocator
-	idToIdx   map[string]int
-	idxToID   map[int]string
+
+	mu      sync.RWMutex
+	idToIdx map[string]int
+	idxToID map[int]string
+
+	// Thread-safe reusable buffer pool to eliminate allocation during Add/Search
+	vectorPool sync.Pool
 }
 
 // NewArrowHNSWIndex creates a new index with default HNSW parameters.
-func NewArrowHNSWIndex(dim int) *ArrowHNSWIndex { // arrow-hnsw
+func NewArrowHNSWIndex(dim int) *ArrowHNSWIndex {
 	g := arrowindex.NewGraph(dim, 16, 200, 100, 1024, memory.DefaultAllocator)
+
 	return &ArrowHNSWIndex{
 		graph:     g,
 		dim:       dim,
 		allocator: memory.DefaultAllocator,
 		idToIdx:   make(map[string]int),
 		idxToID:   make(map[int]string),
+		vectorPool: sync.Pool{
+			New: func() any {
+				v := make([]float64, dim)
+				return &v
+			},
+		},
 	}
 }
 
-// Add inserts a vector with the given ID into the index.
-func (idx *ArrowHNSWIndex) Add(vec *array.Float32, id string) error { // arrow-hnsw
-	if vec.Len() != idx.dim {
-		return fmt.Errorf("dimension mismatch: got %d want %d", vec.Len(), idx.dim)
-	}
+// addRaw bypasses Arrow array construction for high-speed internal loading.
+func (idx *ArrowHNSWIndex) addRaw(f32vals []float32, id string) error {
+	idx.mu.Lock()
 	if _, exists := idx.idToIdx[id]; exists {
+		idx.mu.Unlock()
 		return fmt.Errorf("vector with ID %s already exists", id)
-	}
-	vals := make([]float64, idx.dim)
-	for i := 0; i < idx.dim; i++ {
-		vals[i] = float64(vec.Value(i))
 	}
 	internal := len(idx.idxToID)
 	idx.idToIdx[id] = internal
 	idx.idxToID[internal] = id
-	return idx.graph.Add(internal, vals)
+	idx.mu.Unlock()
+
+	// Use existing buffer to avoid allocation
+	ptr := idx.vectorPool.Get().(*[]float64)
+	vals := *ptr
+
+	for i := 0; i < idx.dim; i++ {
+		vals[i] = float64(f32vals[i])
+	}
+
+	err := idx.graph.Add(internal, vals)
+	idx.vectorPool.Put(ptr)
+	return err
+}
+
+// Add inserts a vector with the given ID into the index.
+func (idx *ArrowHNSWIndex) Add(vec *array.Float32, id string) error {
+	if vec == nil || vec.Data() == nil {
+		return fmt.Errorf("invalid or nil vector provided")
+	}
+	if vec.Len() != idx.dim {
+		return fmt.Errorf("dimension mismatch: got %d want %d", vec.Len(), idx.dim)
+	}
+	return idx.addRaw(vec.Float32Values(), id)
 }
 
 // Search returns the k nearest results to the query vector.
-func (idx *ArrowHNSWIndex) Search(query *array.Float32, k int) ([]Result, error) { // arrow-hnsw
+func (idx *ArrowHNSWIndex) Search(query *array.Float32, k int) ([]Result, error) {
 	if k <= 0 {
 		return nil, fmt.Errorf("k must be positive")
+	}
+	if query == nil || query.Data() == nil {
+		return nil, fmt.Errorf("invalid or nil query vector")
 	}
 	if query.Len() != idx.dim {
 		return nil, fmt.Errorf("dimension mismatch: got %d want %d", query.Len(), idx.dim)
 	}
-	q := make([]float64, idx.dim)
+
+	ptr := idx.vectorPool.Get().(*[]float64)
+	q := *ptr
+	defer idx.vectorPool.Put(ptr)
+
+	// Direct slice access is significantly faster than querying .Value(i)
+	f32vals := query.Float32Values()
 	for i := 0; i < idx.dim; i++ {
-		q[i] = float64(query.Value(i))
+		q[i] = float64(f32vals[i])
 	}
+
 	indices, err := idx.graph.Search(q, k)
 	if err != nil {
 		return nil, err
 	}
+
 	res := make([]Result, len(indices))
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
 	for i, idxNum := range indices {
 		vec := idx.graph.GetVector(idxNum)
 		var dist float64
@@ -85,25 +130,25 @@ func (idx *ArrowHNSWIndex) Search(query *array.Float32, k int) ([]Result, error)
 		}
 		res[i] = Result{ID: idx.idxToID[idxNum], Distance: float32(dist)}
 	}
+
 	return res, nil
 }
 
 // Save writes the index to an Arrow IPC file.
-func (idx *ArrowHNSWIndex) Save(path string) error { // arrow-hnsw
-	ids := make([]string, 0, idx.graph.Len())
-	vecBuilder := array.NewFloat32Builder(idx.allocator)
-	defer vecBuilder.Release()
-	for internal := 0; internal < idx.graph.Len(); internal++ {
+func (idx *ArrowHNSWIndex) Save(path string) error {
+	idx.mu.RLock()
+	length := idx.graph.Len()
+	ids := make([]string, 0, length)
+
+	for internal := 0; internal < length; internal++ {
 		id, exists := idx.idxToID[internal]
 		if !exists {
+			idx.mu.RUnlock()
 			return fmt.Errorf("missing external ID for internal index %d", internal)
 		}
 		ids = append(ids, id)
-		vec := idx.graph.GetVector(internal)
-		vecBuilder.AppendValues(float32Slice(vec), nil)
 	}
-	vecArray := vecBuilder.NewArray().(*array.Float32)
-	defer vecArray.Release()
+	idx.mu.RUnlock()
 
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: "id", Type: arrow.BinaryTypes.String},
@@ -112,15 +157,28 @@ func (idx *ArrowHNSWIndex) Save(path string) error { // arrow-hnsw
 
 	rb := array.NewRecordBuilder(idx.allocator, schema)
 	defer rb.Release()
-	rb.Field(0).(*array.StringBuilder).AppendValues(ids, nil)
+
+	idBuilder := rb.Field(0).(*array.StringBuilder)
 	listBuilder := rb.Field(1).(*array.FixedSizeListBuilder)
 	fb := listBuilder.ValueBuilder().(*array.Float32Builder)
-	offset := 0
-	for i := 0; i < len(ids); i++ {
+
+	// Pre-allocate array capacity to prevent re-allocations during iteration
+	idBuilder.Reserve(length)
+	listBuilder.Reserve(length)
+	fb.Reserve(length * idx.dim)
+
+	f32vec := make([]float32, idx.dim)
+	for internal := 0; internal < length; internal++ {
+		idBuilder.Append(ids[internal])
 		listBuilder.Append(true)
-		fb.AppendValues(vecArray.Float32Values()[offset:offset+idx.dim], nil)
-		offset += idx.dim
+
+		vec := idx.graph.GetVector(internal)
+		for j := 0; j < idx.dim; j++ {
+			f32vec[j] = float32(vec[j])
+		}
+		fb.AppendValues(f32vec, nil)
 	}
+
 	rec := rb.NewRecord()
 	defer rec.Release()
 
@@ -129,57 +187,55 @@ func (idx *ArrowHNSWIndex) Save(path string) error { // arrow-hnsw
 		return err
 	}
 	defer f.Close()
+
 	w, err := ipc.NewFileWriter(f, ipc.WithSchema(schema))
 	if err != nil {
 		return err
 	}
-	if err := w.Write(rec); err != nil {
-		w.Close()
-		return err
-	}
-	return w.Close()
+	defer w.Close()
+
+	return w.Write(rec)
 }
 
 // Load restores the index from an Arrow IPC file.
-func (idx *ArrowHNSWIndex) Load(path string) error { // arrow-hnsw
+func (idx *ArrowHNSWIndex) Load(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+
 	r, err := ipc.NewFileReader(f)
 	if err != nil {
 		return err
 	}
-	rec, err := r.Record(0)
-	if err != nil {
-		return err
-	}
-	ids := rec.Column(0).(*array.String)
-	list := rec.Column(1).(*array.FixedSizeList)
-	values := list.ListValues().(*array.Float32)
-	offset := 0
-	for i := 0; i < int(rec.NumRows()); i++ {
-		vecSlice := values.Float32Values()[offset : offset+idx.dim]
-		vb := array.NewFloat32Builder(idx.allocator)
-		vb.AppendValues(vecSlice, nil)
-		arr := vb.NewArray()
-		if err := idx.Add(arr.(*array.Float32), ids.Value(i)); err != nil {
-			arr.Release()
-			vb.Release()
+	defer r.Close()
+
+	// Arrow IPC files can contain multiple records; iterate through all of them
+	for i := 0; i < r.NumRecords(); i++ {
+		rec, err := r.Record(i)
+		if err != nil {
 			return err
 		}
-		arr.Release()
-		vb.Release()
-		offset += idx.dim
-	}
-	return nil
-}
 
-func float32Slice(in []float64) []float32 { // arrow-hnsw
-	out := make([]float32, len(in))
-	for i, v := range in {
-		out[i] = float32(v)
+		ids := rec.Column(0).(*array.String)
+		list := rec.Column(1).(*array.FixedSizeList)
+		values := list.ListValues().(*array.Float32)
+
+		f32vals := values.Float32Values()
+		offset := 0
+
+		numRows := int(rec.NumRows())
+		for j := 0; j < numRows; j++ {
+			vecSlice := f32vals[offset : offset+idx.dim]
+
+			// Bypass expensive array builder overhead by calling addRaw directly
+			if err := idx.addRaw(vecSlice, ids.Value(j)); err != nil {
+				return err
+			}
+			offset += idx.dim
+		}
 	}
-	return out
+
+	return nil
 }

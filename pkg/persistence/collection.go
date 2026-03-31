@@ -2,7 +2,6 @@ package persistence
 
 import (
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -36,6 +35,10 @@ type Collection struct {
 	// Facet fields and values
 	facetFields  []string
 	vectorFacets map[string][]facets.FacetValue
+
+	// For persistence safety
+	manager     *Manager
+	persistedAt time.Time
 }
 
 // NewCollection creates a new persistable collection
@@ -107,9 +110,10 @@ func (c *Collection) AddVector(id string, vector []float32, metadata map[string]
 	copy(vecCopy, vector)
 	c.vectors[id] = vecCopy
 
+	var metaCopy map[string]string
 	// Store metadata if provided
 	if metadata != nil {
-		metaCopy := make(map[string]string, len(metadata))
+		metaCopy = make(map[string]string, len(metadata))
 		for k, v := range metadata {
 			metaCopy[k] = v
 		}
@@ -128,6 +132,17 @@ func (c *Collection) AddVector(id string, vector []float32, metadata map[string]
 
 	// Mark as dirty
 	c.dirty = true
+
+	// Log WAL entry if manager is set
+	if c.manager != nil {
+		c.manager.logMutation(WalEntry{
+			Timestamp: time.Now(),
+			Type:      WalTypeAdd,
+			VectorID:  id,
+			Vector:    vecCopy,
+			Metadata:  metaCopy,
+		})
+	}
 
 	return nil
 }
@@ -153,6 +168,15 @@ func (c *Collection) DeleteVector(id string) error {
 
 	// Mark as dirty
 	c.dirty = true
+
+	// Log WAL entry if manager is set
+	if c.manager != nil {
+		c.manager.logMutation(WalEntry{
+			Timestamp: time.Now(),
+			Type:      WalTypeDelete,
+			VectorID:  id,
+		})
+	}
 
 	return nil
 }
@@ -195,6 +219,7 @@ func (c *Collection) MarkClean() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.dirty = false
+	c.persistedAt = time.Now()
 }
 
 // Search finds the most similar vectors to a query vector
@@ -243,9 +268,13 @@ type SearchResult struct {
 
 // SortSearchResults sorts search results by distance (ascending)
 func SortSearchResults(results []SearchResult) {
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Distance < results[j].Distance
-	})
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[j].Distance < results[i].Distance {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
 }
 
 // Count returns the number of vectors in the collection
@@ -346,4 +375,19 @@ func (c *Collection) SearchWithFacets(query []float32, limit int, filters []face
 	}
 
 	return results, nil
+}
+
+// GetDistanceFunction returns the name of the distance function
+func (c *Collection) GetDistanceFunction() string {
+	if c.distanceFunc == nil {
+		return ""
+	}
+	return "cosine" // Default
+}
+
+// SetManager sets the persistence manager for WAL logging
+func (c *Collection) SetManager(m *Manager) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.manager = m
 }
