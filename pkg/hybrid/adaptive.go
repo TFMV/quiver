@@ -115,22 +115,12 @@ func (a *AdaptiveStrategySelector) adaptThresholds() {
 		return
 	}
 
-	// Compare average performance of strategies
-	// If exact is faster for larger datasets than our current threshold,
-	// increase the threshold
-	_ = exactStats.AvgDuration < hnswStats.AvgDuration
-
 	// Analyze recent queries to find patterns
 	var (
 		smallDatasetExactAvg   time.Duration
 		smallDatasetHNSWAvg    time.Duration
 		smallDatasetExactCount int
 		smallDatasetHNSWCount  int
-
-		largeDatasetExactAvg   time.Duration
-		largeDatasetHNSWAvg    time.Duration
-		largeDatasetExactCount int
-		largeDatasetHNSWCount  int
 	)
 
 	// Analyze recent queries by dataset size
@@ -141,17 +131,11 @@ func (a *AdaptiveStrategySelector) adaptThresholds() {
 			if isSmall {
 				smallDatasetExactAvg += q.Duration
 				smallDatasetExactCount++
-			} else {
-				largeDatasetExactAvg += q.Duration
-				largeDatasetExactCount++
 			}
 		} else if q.Strategy == HNSWIndexType {
 			if isSmall {
 				smallDatasetHNSWAvg += q.Duration
 				smallDatasetHNSWCount++
-			} else {
-				largeDatasetHNSWAvg += q.Duration
-				largeDatasetHNSWCount++
 			}
 		}
 	}
@@ -163,16 +147,6 @@ func (a *AdaptiveStrategySelector) adaptThresholds() {
 	if smallDatasetHNSWCount > 0 {
 		smallDatasetHNSWAvg /= time.Duration(smallDatasetHNSWCount)
 	}
-	// Only calculate these if they will be used later
-	// For now these are calculated but not used, so we'll comment them out
-	/*
-		if largeDatasetExactCount > 0 {
-			largeDatasetExactAvg /= time.Duration(largeDatasetExactCount)
-		}
-		if largeDatasetHNSWCount > 0 {
-			largeDatasetHNSWAvg /= time.Duration(largeDatasetHNSWCount)
-		}
-	*/
 
 	// Adapt exact threshold based on performance for small vs large datasets
 	if smallDatasetExactCount > 5 && smallDatasetHNSWCount > 5 {
@@ -197,10 +171,6 @@ func (a *AdaptiveStrategySelector) adaptThresholds() {
 			}
 		}
 	}
-
-	// Similarly, adapt dimension threshold based on performance for different dimensions
-	// This would require additional analysis of performance by dimension
-	// For simplicity, we'll keep this part as a future enhancement
 }
 
 // GetStats returns statistics about the adaptive selector

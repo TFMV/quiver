@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/TFMV/quiver/pkg/facets"
+	"github.com/TFMV/quiver/pkg/observability"
 	"github.com/TFMV/quiver/pkg/types"
 	"github.com/TFMV/quiver/pkg/vectortypes"
 )
@@ -130,11 +131,27 @@ func NewCollection(name string, dimension int, index Index) *Collection {
 
 // Add inserts a new vector with optional metadata
 func (c *Collection) Add(id string, vector vectortypes.F32, metadata json.RawMessage) error {
+	startTime := time.Now()
+
+	metrics := observability.GlobalMetrics()
+	hasMetrics := metrics.Enabled()
+
 	c.Lock()
 	defer c.Unlock()
 
+	// Validate ID
+	if id == "" {
+		if hasMetrics {
+			metrics.RecordInsertError(c.Name, "empty_id")
+		}
+		return errors.New("vector ID cannot be empty")
+	}
+
 	// Validate vector dimension
 	if len(vector) != c.Dimension {
+		if hasMetrics {
+			metrics.RecordInsertError(c.Name, "invalid_dimension")
+		}
 		return fmt.Errorf("%w: expected %d, got %d", ErrInvalidDimension, c.Dimension, len(vector))
 	}
 
@@ -142,12 +159,26 @@ func (c *Collection) Add(id string, vector vectortypes.F32, metadata json.RawMes
 	if len(metadata) > 0 {
 		var metadataMap map[string]interface{}
 		if err := json.Unmarshal(metadata, &metadataMap); err != nil {
+			if hasMetrics {
+				metrics.RecordInsertError(c.Name, "invalid_metadata")
+			}
 			return fmt.Errorf("%w: %v", ErrInvalidMetadata, err)
 		}
 	}
 
+	// Check if vector with same ID already exists
+	if _, exists := c.Vectors[id]; exists {
+		if hasMetrics {
+			metrics.RecordInsertError(c.Name, "duplicate_id")
+		}
+		return fmt.Errorf("%w: %s", ErrVectorAlreadyExist, id)
+	}
+
 	// Add to index
 	if err := c.Index.Insert(id, vector); err != nil {
+		if hasMetrics {
+			metrics.RecordInsertError(c.Name, "index_error")
+		}
 		return err
 	}
 
@@ -163,17 +194,52 @@ func (c *Collection) Add(id string, vector vectortypes.F32, metadata json.RawMes
 		}
 	}
 
+	duration := time.Since(startTime)
+	if hasMetrics {
+		metrics.RecordInsertLatency(c.Name, "single", duration)
+		metrics.RecordInsert(c.Name, "single", 1)
+		metrics.RecordInMemoryLatency("insert", duration)
+		metrics.UpdateVectorCount(c.Name, c.Index.Size())
+	}
+
 	return nil
 }
 
 // AddBatch inserts multiple vectors in batch
 func (c *Collection) AddBatch(vectors []vectortypes.Vector) error {
+	startTime := time.Now()
+
+	metrics := observability.GlobalMetrics()
+	hasMetrics := metrics.Enabled()
+
+	if hasMetrics {
+		metrics.RecordBatch(c.Name, "insert", len(vectors))
+	}
+
 	c.Lock()
 	defer c.Unlock()
 
+	// Validate input
+	if len(vectors) == 0 {
+		if hasMetrics {
+			metrics.RecordBatchError(c.Name, "insert", "empty_input")
+		}
+		return errors.New("no vectors provided for batch insert")
+	}
+
 	// Pre-validate all vectors
 	for _, v := range vectors {
+		if v.ID == "" {
+			if hasMetrics {
+				metrics.RecordBatchError(c.Name, "insert", "empty_id")
+			}
+			return errors.New("vector ID cannot be empty")
+		}
+
 		if len(v.Values) != c.Dimension {
+			if hasMetrics {
+				metrics.RecordBatchError(c.Name, "insert", "invalid_dimension")
+			}
 			return fmt.Errorf("%w for vector %s: expected %d, got %d",
 				ErrInvalidDimension, v.ID, c.Dimension, len(v.Values))
 		}
@@ -181,8 +247,19 @@ func (c *Collection) AddBatch(vectors []vectortypes.Vector) error {
 		if len(v.Metadata) > 0 {
 			var metadataMap map[string]interface{}
 			if err := json.Unmarshal(v.Metadata, &metadataMap); err != nil {
+				if hasMetrics {
+					metrics.RecordBatchError(c.Name, "insert", "invalid_metadata")
+				}
 				return fmt.Errorf("%w for vector %s: %v", ErrInvalidMetadata, v.ID, err)
 			}
+		}
+
+		// Check for duplicates within the batch
+		if _, exists := c.Vectors[v.ID]; exists {
+			if hasMetrics {
+				metrics.RecordBatchError(c.Name, "insert", "duplicate_id")
+			}
+			return fmt.Errorf("%w: %s", ErrVectorAlreadyExist, v.ID)
 		}
 	}
 
@@ -213,12 +290,22 @@ func (c *Collection) AddBatch(vectors []vectortypes.Vector) error {
 			}
 		}
 
+		duration := time.Since(startTime)
+		if hasMetrics {
+			metrics.RecordBatchLatency(c.Name, "insert", duration)
+			metrics.RecordInMemoryLatency("batch_insert", duration)
+			metrics.UpdateVectorCount(c.Name, c.Index.Size())
+		}
+
 		return nil
 	}
 
 	// Fallback to individual insertions if the index doesn't support batch operations
 	for _, v := range vectors {
 		if err := c.Index.Insert(v.ID, v.Values); err != nil {
+			if hasMetrics {
+				metrics.RecordBatchError(c.Name, "insert", "index_error")
+			}
 			return err
 		}
 		c.Vectors[v.ID] = v.Values
@@ -231,6 +318,13 @@ func (c *Collection) AddBatch(vectors []vectortypes.Vector) error {
 				c.vectorFacets[v.ID] = facets.ExtractFacets(metadataMap, c.FacetFields)
 			}
 		}
+	}
+
+	duration := time.Since(startTime)
+	if hasMetrics {
+		metrics.RecordBatchLatency(c.Name, "insert_fallback", duration)
+		metrics.RecordInMemoryLatency("batch_insert_fallback", duration)
+		metrics.UpdateVectorCount(c.Name, c.Index.Size())
 	}
 
 	return nil
@@ -376,8 +470,17 @@ func (c *Collection) UpdateBatch(vectors []vectortypes.Vector) error {
 	c.Lock()
 	defer c.Unlock()
 
+	// Validate input
+	if len(vectors) == 0 {
+		return errors.New("no vectors provided for batch update")
+	}
+
 	// Validate all vectors first
 	for _, v := range vectors {
+		if v.ID == "" {
+			return errors.New("vector ID cannot be empty")
+		}
+
 		if _, exists := c.Vectors[v.ID]; !exists {
 			return fmt.Errorf("%w: %s", ErrVectorNotFound, v.ID)
 		}
@@ -534,16 +637,29 @@ func compareValues(a, b interface{}) int {
 func (c *Collection) Search(request types.SearchRequest) (types.SearchResponse, error) {
 	startTime := time.Now()
 
+	metrics := observability.GlobalMetrics()
+	hasMetrics := metrics.Enabled()
+
+	if hasMetrics {
+		metrics.RecordSearch(c.Name)
+	}
+
 	c.RLock()
 	defer c.RUnlock()
 
 	// Validate query vector dimension
 	if len(request.Vector) != c.Dimension {
+		if hasMetrics {
+			metrics.RecordSearchError(c.Name, "invalid_dimension")
+		}
 		return types.SearchResponse{}, fmt.Errorf("%w: expected %d, got %d", ErrInvalidDimension, c.Dimension, len(request.Vector))
 	}
 
 	// Validate TopK
 	if request.TopK <= 0 {
+		if hasMetrics {
+			metrics.RecordSearchError(c.Name, "invalid_topk")
+		}
 		return types.SearchResponse{}, errors.New("top_k must be greater than 0")
 	}
 	if c.Index.Size() == 0 {
@@ -565,13 +681,28 @@ func (c *Collection) Search(request types.SearchRequest) (types.SearchResponse, 
 		searchK = c.Index.Size()
 	}
 
+	// Track traversal latency
+	traversalStart := time.Now()
 	basicResults, err := c.Index.Search(vectortypes.F32(request.Vector), searchK)
+	traversalDuration := time.Since(traversalStart)
+
+	if hasMetrics {
+		metrics.RecordTraversalLatency(c.Name, traversalDuration)
+		metrics.RecordSearchLatency(c.Name, "traversal", traversalDuration)
+	}
+
 	if err != nil {
+		if hasMetrics {
+			metrics.RecordSearchError(c.Name, "index_error")
+		}
 		return types.SearchResponse{}, err
 	}
 
 	// Apply metadata filters if specified
+	filterStart := time.Time{}
+	filterDuration := time.Duration(0)
 	if len(request.Filters) > 0 {
+		filterStart = time.Now()
 		// Convert filters to our internal format
 		filters := make([]Filter, len(request.Filters))
 		for i, f := range request.Filters {
@@ -610,6 +741,12 @@ func (c *Collection) Search(request types.SearchRequest) (types.SearchResponse, 
 					break
 				}
 			}
+		}
+
+		filterDuration = time.Since(filterStart)
+		if hasMetrics {
+			metrics.RecordFilterLatency(c.Name, filterDuration)
+			metrics.RecordSearchLatency(c.Name, "filter", filterDuration)
 		}
 
 		basicResults = filteredResults
@@ -658,6 +795,12 @@ func (c *Collection) Search(request types.SearchRequest) (types.SearchResponse, 
 	// Include query vector if requested
 	if request.Options.IncludeVectors {
 		response.Query = request.Vector
+	}
+
+	totalDuration := time.Since(startTime)
+	if hasMetrics {
+		metrics.RecordSearchLatency(c.Name, "total", totalDuration)
+		metrics.RecordInMemoryLatency("search", totalDuration)
 	}
 
 	return response, nil
@@ -735,52 +878,124 @@ type FluentSearch struct {
 	filters     []types.Filter
 	options     types.SearchOptions
 	namespaceID string
+	valid       bool
+	err         error
 }
 
 // FluentSearch creates a new fluent search builder
 func (c *Collection) FluentSearch(vector vectortypes.F32) *FluentSearch {
-	return &FluentSearch{
+	fs := &FluentSearch{
 		collection: c,
 		vector:     vector,
-		k:          10, // Default to 10 results
+		k:          10,
 		options: types.SearchOptions{
 			IncludeMetadata: true,
 		},
+		valid: true,
 	}
+
+	// Validate vector dimension upfront
+	if len(vector) != c.Dimension {
+		fs.valid = false
+		fs.err = fmt.Errorf("%w: expected %d, got %d", ErrInvalidDimension, c.Dimension, len(vector))
+	}
+
+	return fs
+}
+
+// validate checks if the FluentSearch is in a valid state before execution
+func (fs *FluentSearch) validate() error {
+	if !fs.valid {
+		return fs.err
+	}
+
+	if fs.collection == nil {
+		return errors.New("collection is nil")
+	}
+
+	if fs.vector == nil {
+		return errors.New("query vector is nil")
+	}
+
+	if fs.k <= 0 {
+		return errors.New("k must be greater than 0")
+	}
+
+	if fs.k > fs.collection.Count() {
+		fs.k = fs.collection.Count()
+	}
+
+	return nil
 }
 
 // WithK sets the number of results to return
 func (fs *FluentSearch) WithK(k int) *FluentSearch {
+	if !fs.valid {
+		return fs
+	}
+
+	if k <= 0 {
+		fs.valid = false
+		fs.err = errors.New("k must be greater than 0")
+		return fs
+	}
+
 	fs.k = k
 	return fs
 }
 
 // WithNamespace sets the namespace to search in
 func (fs *FluentSearch) WithNamespace(namespace string) *FluentSearch {
+	if !fs.valid {
+		return fs
+	}
+
 	fs.namespaceID = namespace
 	return fs
 }
 
 // IncludeVectors specifies whether to include vector values in results
 func (fs *FluentSearch) IncludeVectors(include bool) *FluentSearch {
+	if !fs.valid {
+		return fs
+	}
+
 	fs.options.IncludeVectors = include
 	return fs
 }
 
 // IncludeMetadata specifies whether to include metadata in results
 func (fs *FluentSearch) IncludeMetadata(include bool) *FluentSearch {
+	if !fs.valid {
+		return fs
+	}
+
 	fs.options.IncludeMetadata = include
 	return fs
 }
 
 // UseExactSearch enables exact search for higher accuracy
 func (fs *FluentSearch) UseExactSearch() *FluentSearch {
+	if !fs.valid {
+		return fs
+	}
+
 	fs.options.ExactSearch = true
 	return fs
 }
 
 // Filter adds a metadata filter with equals operator
 func (fs *FluentSearch) Filter(field string, value interface{}) *FluentSearch {
+	if !fs.valid {
+		return fs
+	}
+
+	if field == "" {
+		fs.valid = false
+		fs.err = errors.New("filter field cannot be empty")
+		return fs
+	}
+
 	fs.filters = append(fs.filters, types.Filter{
 		Field:    field,
 		Operator: string(Equals),
@@ -791,6 +1006,16 @@ func (fs *FluentSearch) Filter(field string, value interface{}) *FluentSearch {
 
 // FilterNotEquals adds a not-equals filter
 func (fs *FluentSearch) FilterNotEquals(field string, value interface{}) *FluentSearch {
+	if !fs.valid {
+		return fs
+	}
+
+	if field == "" {
+		fs.valid = false
+		fs.err = errors.New("filter field cannot be empty")
+		return fs
+	}
+
 	fs.filters = append(fs.filters, types.Filter{
 		Field:    field,
 		Operator: string(NotEquals),
@@ -801,6 +1026,16 @@ func (fs *FluentSearch) FilterNotEquals(field string, value interface{}) *Fluent
 
 // FilterGreaterThan adds a greater-than filter
 func (fs *FluentSearch) FilterGreaterThan(field string, value interface{}) *FluentSearch {
+	if !fs.valid {
+		return fs
+	}
+
+	if field == "" {
+		fs.valid = false
+		fs.err = errors.New("filter field cannot be empty")
+		return fs
+	}
+
 	fs.filters = append(fs.filters, types.Filter{
 		Field:    field,
 		Operator: string(GreaterThan),
@@ -811,6 +1046,16 @@ func (fs *FluentSearch) FilterGreaterThan(field string, value interface{}) *Flue
 
 // FilterLessThan adds a less-than filter
 func (fs *FluentSearch) FilterLessThan(field string, value interface{}) *FluentSearch {
+	if !fs.valid {
+		return fs
+	}
+
+	if field == "" {
+		fs.valid = false
+		fs.err = errors.New("filter field cannot be empty")
+		return fs
+	}
+
 	fs.filters = append(fs.filters, types.Filter{
 		Field:    field,
 		Operator: string(LessThan),
@@ -821,6 +1066,22 @@ func (fs *FluentSearch) FilterLessThan(field string, value interface{}) *FluentS
 
 // FilterIn adds an in-list filter
 func (fs *FluentSearch) FilterIn(field string, values []interface{}) *FluentSearch {
+	if !fs.valid {
+		return fs
+	}
+
+	if field == "" {
+		fs.valid = false
+		fs.err = errors.New("filter field cannot be empty")
+		return fs
+	}
+
+	if len(values) == 0 {
+		fs.valid = false
+		fs.err = errors.New("filter values cannot be empty")
+		return fs
+	}
+
 	fs.filters = append(fs.filters, types.Filter{
 		Field:    field,
 		Operator: string(In),
@@ -831,7 +1092,10 @@ func (fs *FluentSearch) FilterIn(field string, values []interface{}) *FluentSear
 
 // Execute runs the search with the configured parameters
 func (fs *FluentSearch) Execute() (types.SearchResponse, error) {
-	// Create a search request from the fluent parameters
+	if err := fs.validate(); err != nil {
+		return types.SearchResponse{}, err
+	}
+
 	request := types.SearchRequest{
 		Vector:      fs.vector,
 		TopK:        fs.k,
@@ -840,7 +1104,6 @@ func (fs *FluentSearch) Execute() (types.SearchResponse, error) {
 		NamespaceID: fs.namespaceID,
 	}
 
-	// Execute the search
 	return fs.collection.Search(request)
 }
 

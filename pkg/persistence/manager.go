@@ -22,6 +22,8 @@ type CollectionConfig struct {
 	CreatedAt time.Time `json:"created_at"`
 	// Fields to be indexed as facets
 	FacetFields []string `json:"facet_fields,omitempty"`
+	// Version for schema evolution
+	Version int `json:"version"`
 }
 
 // VectorRecord represents a vector record that can be saved to storage
@@ -34,22 +36,26 @@ type VectorRecord struct {
 // GetCollectionCallback is a function type that retrieves a collection by name
 type GetCollectionCallback func(name string) (Persistable, error)
 
-// Manager handles persistence operations for the database
-type Manager struct {
-	// Root directory for storage
-	rootDir string
-	// Flush interval for background saving
-	flushInterval time.Duration
-	// Collections that need to be flushed
-	dirtyCollections map[string]bool
-	// Lock for thread safety
-	mu sync.RWMutex
-	// Stop channel for the background flush goroutine
-	stopCh chan struct{}
-	// Whether the manager is running
-	running bool
-	// Callback to get a collection by name
-	getCollectionCallback GetCollectionCallback
+// WAL types for Write-Ahead Log
+type WalType string
+
+const (
+	WalTypeAdd    WalType = "add"
+	WalTypeDelete WalType = "delete"
+)
+
+// WalEntry represents a single mutation in the Write-Ahead Log
+type WalEntry struct {
+	Timestamp time.Time         `json:"timestamp"`
+	Type      WalType           `json:"type"`
+	VectorID  string            `json:"vector_id,omitempty"`
+	Vector    []float32         `json:"vector,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+}
+
+// WalFile represents a WAL segment file
+type WalFile struct {
+	Entries []WalEntry `json:"entries"`
 }
 
 // Persistable is an interface for objects that can be persisted
@@ -68,6 +74,31 @@ type Persistable interface {
 	SetFacetFields(fields []string)
 }
 
+// Manager handles persistence operations for the database
+type Manager struct {
+	// Root directory for storage
+	rootDir string
+	// Flush interval for background saving
+	flushInterval time.Duration
+	// Collections that need to be flushed
+	dirtyCollections map[string]bool
+	// Lock for thread safety
+	mu sync.RWMutex
+	// Stop channel for the background flush goroutine
+	stopCh chan struct{}
+	// Whether the manager is running
+	running bool
+	// Callback to get a collection by name
+	getCollectionCallback GetCollectionCallback
+
+	// WAL-related fields
+	walDir        string
+	walFile       *os.File
+	walMu         sync.Mutex
+	currentWalSeq uint64
+	enableWAL     bool
+}
+
 // NewManager creates a new persistence manager
 func NewManager(rootDir string, flushInterval time.Duration) (*Manager, error) {
 	// Ensure root directory exists
@@ -82,6 +113,13 @@ func NewManager(rootDir string, flushInterval time.Duration) (*Manager, error) {
 		mu:               sync.RWMutex{},
 		stopCh:           make(chan struct{}),
 		running:          true,
+		enableWAL:        true,
+	}
+
+	// Initialize WAL directory
+	manager.walDir = filepath.Join(rootDir, ".wal")
+	if err := os.MkdirAll(manager.walDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create WAL directory: %w", err)
 	}
 
 	// Start background flush goroutine only if the interval is greater than zero
@@ -109,7 +147,7 @@ func (m *Manager) backgroundFlush() {
 	}
 }
 
-// Stop stops the background flush goroutine
+// Stop stops the background flush goroutine and closes WAL
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -117,6 +155,11 @@ func (m *Manager) Stop() {
 	if m.running {
 		close(m.stopCh)
 		m.running = false
+	}
+
+	// Close WAL
+	if m.walFile != nil {
+		m.walFile.Close()
 	}
 }
 
@@ -143,6 +186,14 @@ func (m *Manager) FlushDirtyCollections() {
 	}
 
 	for _, name := range collectionNames {
+		// Check if still dirty (another flush might have cleared it)
+		m.mu.Lock()
+		if !m.dirtyCollections[name] {
+			m.mu.Unlock()
+			continue
+		}
+		m.mu.Unlock()
+
 		collection, err := getCallback(name)
 		if err != nil {
 			// Log the error and continue
@@ -164,6 +215,11 @@ func (m *Manager) FlushDirtyCollections() {
 		delete(m.dirtyCollections, name)
 		m.mu.Unlock()
 	}
+
+	// Truncate WAL after successful flush
+	if m.enableWAL {
+		m.truncateWal()
+	}
 }
 
 // MarkCollectionDirty marks a collection as dirty, indicating it needs to be flushed to disk
@@ -173,7 +229,7 @@ func (m *Manager) MarkCollectionDirty(collectionName string) {
 	m.dirtyCollections[collectionName] = true
 }
 
-// SaveCollectionConfig saves a collection's configuration to disk
+// SaveCollectionConfig saves a collection's configuration to disk using safe write
 func SaveCollectionConfig(config CollectionConfig, configPath string) error {
 	// Create parent directory if it doesn't exist
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
@@ -186,12 +242,8 @@ func SaveCollectionConfig(config CollectionConfig, configPath string) error {
 		return fmt.Errorf("failed to marshal collection config: %w", err)
 	}
 
-	// Write to file
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write collection config: %w", err)
-	}
-
-	return nil
+	// Use safe write pattern
+	return safeWriteFile(configPath, data, 0644)
 }
 
 // LoadCollectionConfig loads a collection's configuration from disk
@@ -211,7 +263,7 @@ func LoadCollectionConfig(configPath string) (CollectionConfig, error) {
 	return config, nil
 }
 
-// FlushCollection saves a collection to disk
+// FlushCollection saves a collection to disk using safe write pattern
 func (m *Manager) FlushCollection(collection interface{}, collectionPath string) error {
 	// Create collection directory if it doesn't exist
 	if err := os.MkdirAll(collectionPath, 0755); err != nil {
@@ -261,7 +313,7 @@ func (m *Manager) FlushCollection(collection interface{}, collectionPath string)
 		facetFields = facetGetter.GetFacetFields()
 	}
 
-	// Save vectors to parquet file if possible
+	// Save vectors to parquet file using safe write
 	vectorsPath := filepath.Join(collectionPath, "vectors.parquet")
 
 	// Try using Parquet first
@@ -282,6 +334,7 @@ func (m *Manager) FlushCollection(collection interface{}, collectionPath string)
 		DistanceFunc: distanceFunc,
 		CreatedAt:    time.Now(),
 		FacetFields:  facetFields,
+		Version:      1,
 	}
 
 	configPath := filepath.Join(collectionPath, "config.json")
@@ -297,7 +350,7 @@ func (m *Manager) FlushCollection(collection interface{}, collectionPath string)
 	return nil
 }
 
-// LoadCollection loads a collection from disk
+// LoadCollection loads a collection from disk with recovery
 func (m *Manager) LoadCollection(collection interface{}, collectionPath string) error {
 	// Check if the collection supports vector addition
 	vectorAdder, ok := collection.(interface {
@@ -305,6 +358,18 @@ func (m *Manager) LoadCollection(collection interface{}, collectionPath string) 
 	})
 	if !ok {
 		return fmt.Errorf("collection does not implement AddVector method")
+	}
+
+	// First, recover from WAL if available
+	if m.enableWAL {
+		walPath := filepath.Join(m.walDir, filepath.Base(collectionPath)+".wal")
+		if _, err := os.Stat(walPath); err == nil {
+			// WAL exists, recover
+			fmt.Printf("Found WAL for %s, recovering...\n", collectionPath)
+			if err := m.recoverFromWal(walPath, vectorAdder); err != nil {
+				fmt.Printf("WAL recovery failed: %v\n", err)
+			}
+		}
 	}
 
 	// Load collection configuration
@@ -318,7 +383,7 @@ func (m *Manager) LoadCollection(collection interface{}, collectionPath string) 
 		}
 	}
 
-	// First try to load from Parquet format
+	// Then try to load from Parquet format
 	vectorsPath := filepath.Join(collectionPath, "vectors.parquet")
 	if _, err := os.Stat(vectorsPath); err == nil {
 		// Parquet file exists, try to load it
@@ -359,6 +424,88 @@ func (m *Manager) LoadCollection(collection interface{}, collectionPath string) 
 	return nil
 }
 
+// recoverFromWal replays WAL entries to recover uncommitted changes
+func (m *Manager) recoverFromWal(walPath string, vectorAdder interface {
+	AddVector(id string, vector []float32, metadata map[string]string) error
+}) error {
+	data, err := os.ReadFile(walPath)
+	if err != nil {
+		return fmt.Errorf("failed to read WAL: %w", err)
+	}
+
+	var walFile WalFile
+	if err := json.Unmarshal(data, &walFile); err != nil {
+		return fmt.Errorf("failed to parse WAL: %w", err)
+	}
+
+	// Replay entries
+	for _, entry := range walFile.Entries {
+		switch entry.Type {
+		case WalTypeAdd:
+			if err := vectorAdder.AddVector(entry.VectorID, entry.Vector, entry.Metadata); err != nil {
+				fmt.Printf("Warning: failed to replay add for %s: %v\n", entry.VectorID, err)
+			}
+		case WalTypeDelete:
+			// Note: Delete not replayed since we're loading from snapshot
+			fmt.Printf("Note: Delete operation in WAL not replayed (exists in snapshot): %s\n", entry.VectorID)
+		}
+	}
+
+	return nil
+}
+
+// logMutation writes a mutation to the WAL
+func (m *Manager) logMutation(entry WalEntry) {
+	if !m.enableWAL {
+		return
+	}
+
+	m.walMu.Lock()
+	defer m.walMu.Unlock()
+
+	// Lazy init WAL file
+	if m.walFile == nil {
+		walPath := filepath.Join(m.walDir, fmt.Sprintf("wal.%d", m.currentWalSeq))
+		f, err := os.OpenFile(walPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			fmt.Printf("Warning: failed to open WAL: %v\n", err)
+			return
+		}
+		m.walFile = f
+	}
+
+	// Write entry
+	data, err := json.Marshal(entry)
+	if err != nil {
+		fmt.Printf("Warning: failed to marshal WAL entry: %v\n", err)
+		return
+	}
+	m.walFile.Write(data)
+	m.walFile.Write([]byte("\n"))
+}
+
+// truncateWal truncates the WAL after successful flush
+func (m *Manager) truncateWal() {
+	m.walMu.Lock()
+	defer m.walMu.Unlock()
+
+	if m.walFile != nil {
+		m.walFile.Close()
+		m.walFile = nil
+
+		// Remove old WAL files
+		filepath.Walk(m.walDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() && filepath.Ext(info.Name()) == ".wal" {
+				os.Remove(path)
+			}
+			return nil
+		})
+	}
+}
+
 // CreateBackup creates a backup of the database
 func (m *Manager) CreateBackup(sourcePath, destPath string) error {
 	// Create destination directory if it doesn't exist
@@ -370,6 +517,11 @@ func (m *Manager) CreateBackup(sourcePath, destPath string) error {
 	return filepath.Walk(sourcePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+
+		// Skip WAL directory
+		if filepath.Base(path) == ".wal" {
+			return nil
 		}
 
 		// Skip the root directory itself
@@ -469,7 +621,47 @@ type VectorStorage struct {
 	Vectors []VectorRecord `json:"vectors"`
 }
 
-// WriteVectorsToFile writes vector records to a JSON file
+// safeWriteFile writes data to a temp file and atomically renames it
+func safeWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tempPath := filepath.Join(dir, "."+filepath.Base(path)+".tmp")
+
+	// Write to temp file
+	if err := os.WriteFile(tempPath, data, perm); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	// Sync the temp file
+	if err := syncFile(tempPath); err != nil {
+		os.Remove(tempPath)
+		return err
+	}
+
+	// Atomic rename
+	if err := os.Rename(tempPath, path); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	return nil
+}
+
+// syncFile syncs file data to disk
+func syncFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := f.Sync(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// WriteVectorsToFile writes vector records to a JSON file using safe write
 func WriteVectorsToFile(records []VectorRecord, filePath string) error {
 	// Create storage object
 	storage := VectorStorage{
@@ -487,12 +679,8 @@ func WriteVectorsToFile(records []VectorRecord, filePath string) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// Write to file
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write vectors file: %w", err)
-	}
-
-	return nil
+	// Use safe write pattern
+	return safeWriteFile(filePath, data, 0644)
 }
 
 // ReadVectorsFromFile reads vector records from a JSON file

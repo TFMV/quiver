@@ -19,15 +19,24 @@ type ParquetVectorRecord struct {
 	Metadata string    `parquet:"name=metadata, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN"`
 }
 
-// writeVectorsToParquet writes vector records to a Parquet file
+// writeVectorsToParquet writes vector records to a Parquet file using safe write pattern
 func writeVectorsToParquet(records []VectorRecord, filePath string) error {
 	// Create parent directory if it doesn't exist
 	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// Create parquet file writer
-	fw, err := local.NewLocalFileWriter(filePath)
+	// Use temp file for safe write
+	tempPath := filePath + ".tmp"
+	cleanupOnError := true
+	defer func() {
+		if cleanupOnError {
+			os.Remove(tempPath)
+		}
+	}()
+
+	// Create parquet file writer for temp file
+	fw, err := local.NewLocalFileWriter(tempPath)
 	if err != nil {
 		return fmt.Errorf("failed to create parquet file writer: %w", err)
 	}
@@ -68,11 +77,28 @@ func writeVectorsToParquet(records []VectorRecord, filePath string) error {
 		return fmt.Errorf("failed to finalize parquet file: %w", err)
 	}
 
+	// Sync the temp file before rename
+	if err := syncFile(tempPath); err != nil {
+		return fmt.Errorf("failed to sync temp file: %w", err)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tempPath, filePath); err != nil {
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	// Success - don't cleanup temp file
+	cleanupOnError = false
 	return nil
 }
 
 // readVectorsFromParquet reads vector records from a Parquet file
 func readVectorsFromParquet(filePath string) ([]VectorRecord, error) {
+	// Check file exists and is readable first
+	if _, err := os.Stat(filePath); err != nil {
+		return nil, fmt.Errorf("failed to stat parquet file: %w", err)
+	}
+
 	// Open parquet file reader
 	fr, err := local.NewLocalFileReader(filePath)
 	if err != nil {
@@ -89,6 +115,10 @@ func readVectorsFromParquet(filePath string) ([]VectorRecord, error) {
 
 	// Get number of records
 	numRecords := int(pr.GetNumRows())
+	if numRecords == 0 {
+		return []VectorRecord{}, nil
+	}
+
 	records := make([]VectorRecord, 0, numRecords)
 
 	// Read records in batches for better performance
@@ -108,14 +138,25 @@ func readVectorsFromParquet(filePath string) ([]VectorRecord, error) {
 
 		// Convert to VectorRecord
 		for _, parquetRecord := range parquetRecords {
+			// Skip empty IDs
+			if parquetRecord.ID == "" {
+				continue
+			}
+
 			// Parse metadata JSON
 			var metadata map[string]string
 			if parquetRecord.Metadata != "" {
 				if err := json.Unmarshal([]byte(parquetRecord.Metadata), &metadata); err != nil {
-					return nil, fmt.Errorf("failed to parse metadata: %w", err)
+					// Skip corrupted metadata, use empty
+					metadata = make(map[string]string)
 				}
 			} else {
 				metadata = make(map[string]string)
+			}
+
+			// Skip empty vectors
+			if len(parquetRecord.Vector) == 0 {
+				continue
 			}
 
 			// Create vector record

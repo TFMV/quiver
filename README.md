@@ -6,9 +6,9 @@ Quiver is a Go-based vector database that combines the best of HNSW (Hierarchica
 
 ## 🙋 Why I Built Quiver
 
-I didn’t create Quiver for production use. It’s a learning project—my way of exploring the internals of vector databases and sharing what I’ve learned. It’s also a toy.
+I didn't create Quiver for production use. It's a learning project—my way of exploring the internals of vector databases and sharing what I've learned. It's also a toy.
 
-If you’re curious about how vector search works under the hood, or if you want a foundation to build your own system, feel free to fork or clone it. I’ve kept it small and modular to make that easier.
+If you're curious about how vector search works under the hood, or if you want a foundation to build your own system, feel free to fork or clone it. I've kept it small and modular to make that easier.
 
 Accompanying write-ups are available on Medium.
 
@@ -36,53 +36,203 @@ All index types support metadata filtering and negative examples. Choose the rig
 - **🏎️ Faceted Search**: High-performance categorical filtering for your vectors
 - **👎 Negative Examples**: Tell Quiver what you don't want to see in your results
 - **⚡ Batch Operations**: Add, update, and delete vectors in batches for lightning speed
-- **💾 Durability**: Your data stays safe with Parquet-based storage
-- **📊 Analytics**: Peek under the hood with graph quality and performance metrics
+- **💾 Durability**: Your data stays safe with Parquet-based storage with WAL
+- **📊 Observability**: Structured logging, Prometheus metrics (p50/p95/p99 latency), tracing
 - **📦 Backup & Restore**: Create snapshots of your database and bring them back when needed
 
-## What can you do with Quiver?
-
-Quiver makes it easy to form complex queries for any of our index types.
+## Quick Start
 
 ```go
-func SearchWithComplexOptions(db *quiver.DB) {
-    log.Println("\nPerforming search with complex options...")
+package main
 
-    // Get a collection
-    collection, err := db.GetCollection("products")
+import (
+    "fmt"
+    "log"
+
+    "github.com/TFMV/quiver/pkg/core"
+    "github.com/TFMV/quiver/pkg/vectortypes"
+)
+
+func main() {
+    // Create database with default options
+    opts := core.DefaultDBOptions()
+    opts.StoragePath = "./data"
+    opts.EnablePersistence = true
+
+    db, err := core.NewDB(opts)
     if err != nil {
-        log.Fatalf("Failed to get collection: %v", err)
+        log.Fatalf("Failed to create DB: %v", err)
+    }
+    defer db.Close()
+
+    // Create collection with cosine distance
+    collection, err := db.CreateCollection("products", 128, vectortypes.CosineDistance)
+    if err != nil {
+        log.Fatalf("Failed to create collection: %v", err)
     }
 
-    // Create a query vector
-    queryVector := []float32{0.2, 0.3, 0.4, 0.5, 0.6}
-    
-    // Use the fluent API for building a complex search query
-    // with both facets and negative examples
+    // Add vectors with metadata
+    err = collection.Add("product-1", []float32{0.1, 0.2, /* ... */}, map[string]string{
+        "category": "electronics",
+        "price": "299.99",
+    })
+    if err != nil {
+        log.Fatalf("Failed to add vector: %v", err)
+    }
+
+    // Or use batch insert for better performance
+    vectors := []vectortypes.Vector{
+        {ID: "p2", Values: []float32{0.5, 0.6, /* ... */}},
+        {ID: "p3", Values: []float32{0.7, 0.8, /* ... */}},
+    }
+    err = collection.AddBatch(vectors)
+    if err != nil {
+        log.Fatalf("Failed to batch add: %v", err)
+    }
+
+    // Search with the fluent API
     results, err := collection.FluentSearch(queryVector).
         WithK(10).
-        WithNegativeExample([]float32{0.9, 0.8, 0.7, 0.6, 0.5}).
-        WithNegativeWeight(0.3).
         Filter("category", "electronics").
-        FilterIn("tags", []interface{}{"smartphone", "5G"}).
-        FilterGreaterThan("price", 100.0).
-        FilterLessThan("price", 500.0).
         Execute()
-    
     if err != nil {
-        log.Printf("Search with complex options failed: %v", err)
-        return
+        log.Fatalf("Search failed: %v", err)
     }
 
-    // Display results
-    log.Printf("Found %d results (with complex options):", len(results.Results))
-    for i, result := range results.Results {
-        log.Printf("  Result %d: ID=%s, Distance=%f", i+1, result.ID, result.Distance)
-        if result.Metadata != nil {
-            log.Printf("    Metadata: %s", string(result.Metadata))
-        }
-    }
+    fmt.Printf("Found %d results\n", len(results.Results))
 }
+```
+
+## Fluent API
+
+The fluent API provides chainable methods for building complex queries:
+
+```go
+results, err := collection.FluentSearch(queryVector).
+    WithK(10).
+    Filter("category", "electronics").
+    FilterIn("tags", []interface{}{"smartphone", "5G"}).
+    FilterGreaterThan("price", 100.0).
+    FilterLessThan("price", 500.0).
+    IncludeVectors(true).
+    Execute()
+```
+
+The fluent API validates inputs early:
+- Query vector dimension is checked at creation time
+- K values are validated before execution
+- Empty filter fields are rejected during building
+
+## Public API Safety
+
+Quiver's public API is designed to prevent invalid states:
+
+- **Input Validation**: All operations validate inputs (dimensions, IDs, K values)
+- **Clear Errors**: Returns specific errors instead of silent failures
+- **Immutable Builders**: FluentSearch validates at build time and fails fast
+
+### Error Types
+
+```go
+var (
+    ErrCollectionNotFound   = errors.New("collection not found")
+    ErrCollectionExists      = errors.New("collection already exists")
+    ErrInvalidDimension     = errors.New("invalid vector dimension")
+    ErrVectorNotFound       = errors.New("vector not found")
+    ErrVectorAlreadyExist   = errors.New("vector with the same ID already exists")
+    ErrInvalidMetadata      = errors.New("invalid metadata format")
+)
+```
+
+## Observability
+
+Quiver includes production-grade observability:
+
+### Metrics (Prometheus)
+
+```go
+import "github.com/TFMV/quiver/pkg/observability"
+
+// Enable metrics
+metrics := observability.GlobalMetrics()
+metrics.SetEnabled(true)
+
+// Access Prometheus registry
+reg := metrics.Registry()
+```
+
+Available metrics:
+- `quiver_search_latency_ms` - Search latency by collection/stage (traversal/filter/total)
+- `quiver_insert_latency_ms` - Insert latency by collection/operation
+- `quiver_batch_latency_ms` - Batch operation latency
+- `quiver_search_total` - Total searches by collection
+- `quiver_index_vectors` - Vector count by collection
+
+### In-Memory Percentiles
+
+```go
+// Get p50/p95/p99 for any operation
+p99 := metrics.GetLatencyPercentiles("search")
+fmt.Printf("Search p99: %.2fms\n", p99.P99)
+```
+
+### Structured Logging
+
+```go
+import "github.com/TFMV/quiver/pkg/observability"
+
+// Configure logging
+logger := observability.NewLogger(os.Stdout, observability.LevelInfo)
+observability.SetDefault(logger)
+
+// Use structured logging
+observability.Info("search completed", 
+    "collection", "products",
+    "results", 10,
+    "duration_ms", 45.2)
+```
+
+### Tracing
+
+```go
+// Enable tracing
+tracer := observability.DefaultTracer()
+tracer.SetEnabled(true)
+
+// Track query stages
+span := observability.StartSpan(ctx, "search")
+defer observability.EndSpan(span)
+span.SetAttr("collection", "products")
+```
+
+## Filtering with Metadata
+
+Quiver supports powerful filtering capabilities through metadata:
+
+```go
+// Search with metadata filters
+results, err := collection.Search(types.SearchRequest{
+    Vector: queryVector,
+    TopK: 10,
+    Filters: []types.Filter{
+        {Field: "category", Operator: "=", Value: "electronics"},
+        {Field: "price", Operator: "<", Value: 500},
+    },
+})
+```
+
+## Faceted Search
+
+For high-performance categorical filtering:
+
+```go
+// Set up facet fields
+collection.SetFacetFields([]string{"category", "price_range"})
+
+// Search with facets
+results, err := collection.SearchWithFacets(queryVector, 10, []facets.Filter{
+    facets.NewEqualityFilter("category", "electronics"),
+})
 ```
 
 ## Tips for Best Performance
@@ -101,194 +251,14 @@ func SearchWithComplexOptions(db *quiver.DB) {
 3. **Use Batch Operations**:
    - Always prefer `BatchAdd` over multiple `Add` calls
    - Same goes for `BatchDelete` vs multiple `Delete` calls
-   - Run `OptimizeStorage` after large batch operations
 
-4. **Be Smart About Backups**:
-   - Schedule backups during quiet times
-   - Keep backups in a separate location
-   - Test your restore process regularly
+4. **Enable Observability**:
+   - Track latency percentiles to identify bottlenecks
+   - Use structured logs for debugging production issues
 
 5. **Delete with Caution**:
    - Deleting vectors can degrade graph quality
    - Consider marking vectors as inactive instead of deleting them
-   - If you must delete, run `OptimizeStorage` afterward
-
-6. **Use Facets for High-Performance Filtering**:
-   - For categorical data that you frequently filter on, use facets instead of metadata filtering
-   - Set up facet fields early when creating your collections
-   - Use facet filtering for categories, tags, and other discrete attributes
-
-## Filtering with Metadata
-
-Quiver supports powerful filtering capabilities through metadata. You can attach arbitrary JSON metadata to your vectors and then filter search results based on this metadata.
-
-```go
-// Add a vector with metadata
-metadata := map[string]interface{}{
-    "category": "electronics",
-    "price": 299.99,
-    "in_stock": true,
-    "tags": []string{"smartphone", "android", "5G"}
-}
-collection.Add(id, vector, metadata)
-
-// Later, search with a metadata filter
-filter := []byte(`{
-    "category": "electronics",
-    "price": {"$lt": 500},
-    "in_stock": true,
-    "tags": {"$contains": "5G"}
-}`)
-
-results, err := collection.Search(types.SearchRequest{
-    Vector: queryVector,
-    TopK: 10,
-    Filters: []types.Filter{
-        {Field: "category", Operator: "=", Value: "electronics"},
-        {Field: "price", Operator: "<", Value: 500},
-        {Field: "in_stock", Operator: "=", Value: true},
-        {Field: "tags", Operator: "contains", Value: "5G"},
-    },
-})
-```
-
-## Faceted Search
-
-Quiver offers an optimized filtering mechanism called faceted search. Facets enable high-performance filtering for categorical data, which is much faster than regular metadata filtering.
-
-### What are Facets?
-
-Facets are precomputed, indexed categorical attributes that allow for rapid filtering. They're ideal for attributes like:
-
-- Product categories
-- Tags
-- Status values (active/inactive)
-- Geographic regions
-- Price ranges
-- Content types
-
-### Using Facets
-
-```go
-// Specify which fields should be indexed as facets
-collection.SetFacetFields([]string{"category", "price_range", "tags"})
-
-// Add vectors with metadata that includes facet fields
-metadata := map[string]interface{}{
-    "category": "electronics",
-    "price_range": "200-500",
-    "tags": ["smartphone", "android", "5G"],
-    "other_field": "this won't be indexed as a facet"
-}
-collection.Add(id, vector, metadata)
-
-// Search with facet filters
-filters := []facets.Filter{
-    facets.NewEqualityFilter("category", "electronics"),
-    facets.NewEqualityFilter("tags", "5G"),
-}
-
-results, err := collection.SearchWithFacets(queryVector, 10, filters)
-```
-
-### Benefits of Facets vs. Metadata Filtering
-
-1. **Performance**: Facets are precomputed and indexed, making filtering operations much faster
-2. **Memory Efficiency**: Facet values are stored in an optimized format
-3. **Type Safety**: Facets provide type-aware filtering with proper comparisons
-4. **Range Queries**: Built-in support for numeric range queries
-5. **Set Operations**: Easily filter based on membership in sets
-
-### When to Use Facets
-
-Use facets when:
-
-- You frequently filter on the same fields
-- Your filtering needs are primarily categorical
-- Performance is critical for your application
-- You're working with large datasets
-
-Use metadata filtering when:
-
-- Your filtering needs are ad-hoc or unpredictable
-- You need complex query expressions
-- You're filtering on fields that change frequently
-
-## Using Negative Examples
-
-Negative examples allow you to steer search results away from specific concepts or characteristics. This is useful when you want to find vectors similar to your query but dissimilar from certain examples.
-
-### How Negative Examples Work
-
-When you provide a negative example vector, Quiver:
-
-1. Performs the standard search to find candidates similar to your query vector
-2. Calculates the similarity between each candidate and the negative example
-3. Re-ranks results to prefer candidates that are less similar to the negative example
-4. Returns the final, adjusted results
-
-### Using Negative Examples with the Standard API
-
-```go
-// Create a search request with a negative example
-request := types.SearchRequest{
-    Vector: queryVector,
-    TopK: 10,
-    NegativeExample: negativeVector,
-    NegativeWeight: 0.5, // 0.5 gives equal importance to positive and negative examples
-}
-
-// Execute the search
-response, err := collection.Search(request)
-```
-
-### Using Negative Examples with the Fluent API
-
-```go
-// Using the fluent API for a search with a negative example
-results, err := collection.FluentSearch(queryVector).
-    WithK(10).
-    WithNegativeExample(negativeVector).
-    WithNegativeWeight(0.5).
-    Execute()
-```
-
-### Advanced Example: Finding Similar But Different Items
-
-```go
-// Find products similar to smartphones but not tablets
-queryVector := productEmbedding["smartphone"]
-negativeVector := productEmbedding["tablet"]
-
-results, err := collection.FluentSearch(queryVector).
-    WithK(20).
-    WithNegativeExample(negativeVector).
-    WithNegativeWeight(0.7). // Strong preference against tablet-like results
-    Filter("category", "electronics").
-    FilterGreaterThan("rating", 4.0).
-    Execute()
-```
-
-### Combining Multiple Approaches
-
-For the most powerful queries, combine negative examples with facets and other filtering options:
-
-```go
-// Find articles about AI but not focused on robotics,
-// published in the last year, with high engagement
-results, err := collection.FluentSearch(aiTopicVector).
-    WithK(50).
-    WithNegativeExample(roboticsVector).
-    WithNegativeWeight(0.6).
-    Filter("published_date", map[string]interface{}{
-        "$gt": time.Now().AddDate(-1, 0, 0),
-    }).
-    Filter("engagement_score", map[string]interface{}{
-        "$gt": 75,
-    }).
-    FilterNotEquals("is_sponsored", true).
-    Execute()
-```
 
 ## License
 

@@ -153,6 +153,9 @@ type Graph struct {
 	visitedPool *VisitedListPool
 
 	mu sync.RWMutex
+
+	// Reusable buffer for getVectorFast to avoid allocations
+	vecBuf []float64
 }
 
 // NewGraph initializes an HNSW index.
@@ -174,6 +177,7 @@ func NewGraph(dim, m, efConstruction, efSearch, chunkSize int, alloc memory.Allo
 		nodes:          make([]*Node, 0),
 		idToIdx:        make(map[int]int),
 		visitedPool:    NewVisitedListPool(50000),
+		vecBuf:         make([]float64, dim),
 	}
 
 	g.levelFunc = func() int { return g.randomLevel() }
@@ -543,8 +547,7 @@ func (g *Graph) greedySearchLayerFast(vec []float64, entry *Node, lvl int) *Node
 	entry.mu.RUnlock()
 
 	cur := entry
-	curVec := g.getVectorFast(cur.idx)
-	dMin := euclideanSquared(vec, curVec)
+	dMin := g.euclideanSquaredArrow(vec, cur.idx)
 
 	improved := true
 	for improved {
@@ -562,8 +565,7 @@ func (g *Graph) greedySearchLayerFast(vec []float64, entry *Node, lvl int) *Node
 			if ni >= len(g.nodes) {
 				continue
 			}
-			nbrVec := g.getVectorFast(ni)
-			d := euclideanSquaredFast(vec, nbrVec)
+			d := g.euclideanSquaredArrow(vec, ni)
 			if d < dMin {
 				dMin = d
 				cur = g.nodes[ni]
@@ -594,8 +596,7 @@ func (g *Graph) searchLayerFast(query []float64, entry *Node, lvl, ef int) []*ca
 		g.resPool.Put(resPtr)
 	}()
 
-	entryVec := g.getVectorFast(entry.idx)
-	d0 := euclideanSquaredFast(query, entryVec)
+	d0 := g.euclideanSquaredArrow(query, entry.idx)
 	heap.Push(pqPtr, &candidate{idx: entry.idx, dist: d0})
 	heap.Push(resPtr, &candidate{idx: entry.idx, dist: d0})
 	visited.Visit(entry.idx)
@@ -628,8 +629,7 @@ func (g *Graph) searchLayerFast(query []float64, entry *Node, lvl, ef int) []*ca
 			}
 			visited.Visit(ni)
 
-			nbrVec := g.getVectorFast(ni)
-			d := euclideanSquaredFast(query, nbrVec)
+			d := g.euclideanSquaredArrow(query, ni)
 
 			if resPtr.Len() < ef {
 				heap.Push(resPtr, &candidate{idx: ni, dist: d})
@@ -654,6 +654,8 @@ func (g *Graph) searchLayerFast(query []float64, entry *Node, lvl, ef int) []*ca
 }
 
 // getVectorFast retrieves vector with optimized memory access patterns.
+// Note: This allocates a new slice each call. For hot paths, prefer
+// getVectorFastDist or computing distance directly.
 func (g *Graph) getVectorFast(idx int) []float64 {
 	result := make([]float64, g.dim)
 
@@ -789,6 +791,72 @@ func euclideanSquaredFast(a, b []float64) float64 {
 	return sum
 }
 
+// euclideanSquaredArrow computes squared euclidean distance between query and vector at idx
+// without allocating an intermediate vector - zero-copy from Arrow data.
+func (g *Graph) euclideanSquaredArrow(query []float64, idx int) float64 {
+	off := idx * g.dim
+	o := off
+
+	var sum float64
+	chunkIdx := 0
+
+	for ; chunkIdx < len(g.vectors); chunkIdx++ {
+		chunk := g.vectors[chunkIdx]
+		n := chunk.Len()
+		if o < n {
+			d := min(n-o, g.dim)
+
+			i := 0
+			for i < d-4 {
+				q0 := query[i]
+				q1 := query[i+1]
+				q2 := query[i+2]
+				q3 := query[i+3]
+				v0 := chunk.Value(o + i)
+				v1 := chunk.Value(o + i + 1)
+				v2 := chunk.Value(o + i + 2)
+				v3 := chunk.Value(o + i + 3)
+				d0 := q0 - v0
+				d1 := q1 - v1
+				d2 := q2 - v2
+				d3 := q3 - v3
+				sum += d0*d0 + d1*d1 + d2*d2 + d3*d3
+				i += 4
+			}
+			for i < d {
+				d := query[i] - chunk.Value(o+i)
+				sum += d * d
+				i++
+			}
+
+			if d < g.dim {
+				remaining := g.dim - d
+				o = 0
+				for j := chunkIdx + 1; j < len(g.vectors) && remaining > 0; j++ {
+					nextChunk := g.vectors[j]
+					nextN := nextChunk.Len()
+					nextD := min(nextN, remaining)
+
+					k := 0
+					for k < nextD {
+						diff := query[d+k] - nextChunk.Value(k)
+						sum += diff * diff
+						k++
+					}
+					remaining -= nextD
+					d += nextD
+					if remaining == 0 {
+						break
+					}
+				}
+			}
+			return sum
+		}
+		o -= n
+	}
+	return sum
+}
+
 // candidate for search.
 type candidate struct {
 	idx  int
@@ -806,7 +874,7 @@ func (h *minHeap) Pop() any {
 	old := *h
 	n := len(old)
 	x := old[n-1]
-	*h = old[:n-1]
+	*h = old[0 : n-1]
 	return x
 }
 
@@ -821,7 +889,7 @@ func (h *maxHeap) Pop() any {
 	old := *h
 	n := len(old)
 	x := old[n-1]
-	*h = old[:n-1]
+	*h = old[0 : n-1]
 	return x
 }
 
